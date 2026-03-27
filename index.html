@@ -23,7 +23,6 @@
       --accent-primary-hover: #008ae6;
       --success: #22c55e;
       --danger: #ef4444;
-      --sidebar-border: #1a1a1a;
       --radius-sm: 6px;
       --radius-md: 8px;
       --radius-lg: 12px;
@@ -45,59 +44,9 @@
     }
 
     .app-shell {
-      display: flex;
       min-height: 100vh;
     }
 
-    /* Sidebar */
-    .sidebar {
-      width: 240px;
-      flex-shrink: 0;
-      background: var(--bg-page);
-      border-right: 1px solid var(--sidebar-border);
-      padding: 1.25rem 1rem;
-      display: flex;
-      flex-direction: column;
-      gap: 1.5rem;
-    }
-
-    .sidebar-brand {
-      font-size: 0.85rem;
-      font-weight: 600;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: var(--text-secondary);
-    }
-
-    .sidebar-nav {
-      display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
-    }
-
-    .sidebar-link {
-      display: block;
-      padding: 0.5rem 0.75rem;
-      border-radius: var(--radius-md);
-      color: var(--text-secondary);
-      text-decoration: none;
-      font-size: 0.85rem;
-      font-weight: 500;
-      border: 1px solid transparent;
-    }
-
-    .sidebar-link:hover {
-      color: var(--text-primary);
-      background: var(--bg-muted);
-    }
-
-    .sidebar-link.is-active {
-      color: var(--text-primary);
-      background: var(--bg-muted);
-      border-color: var(--border-input);
-    }
-
-    /* Main */
     .main-wrap {
       flex: 1;
       min-width: 0;
@@ -115,6 +64,41 @@
       margin-bottom: 1.25rem;
     }
 
+    .page-header-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .page-header-row .page-title {
+      margin-bottom: 0;
+    }
+
+    .btn-add-ticket {
+      flex-shrink: 0;
+      width: 2.25rem;
+      height: 2.25rem;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.35rem;
+      font-weight: 600;
+      line-height: 1;
+      background: var(--accent-primary);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .btn-add-ticket:hover {
+      background: var(--accent-primary-hover);
+    }
+
     .page-title {
       margin: 0 0 0.5rem;
       font-size: 1.25rem;
@@ -130,11 +114,8 @@
       max-width: 42rem;
     }
 
-    /* KPI */
+    /* KPI — compact count only (~¼ previous visual scale) */
     .kpi-row {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-      gap: 1rem;
       margin-bottom: 1.25rem;
     }
 
@@ -145,25 +126,20 @@
       padding: 1.25rem;
     }
 
-    .kpi-label {
-      font-size: 0.85rem;
-      font-weight: 500;
-      color: var(--text-muted);
-      margin-bottom: 0.5rem;
+    .card.kpi-card {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.35rem 0.65rem;
+      min-width: 0;
     }
 
     .kpi-value {
-      font-size: 75px;
+      font-size: calc(75px / 4);
       font-weight: 600;
       line-height: 1;
       letter-spacing: -0.03em;
       color: var(--text-primary);
-    }
-
-    .kpi-meta {
-      margin-top: 0.75rem;
-      font-size: 0.85rem;
-      color: var(--text-tertiary);
     }
 
     /* Tickets card */
@@ -199,97 +175,190 @@
       color: var(--danger);
     }
 
-    .table-wrap {
-      overflow-x: auto;
-      margin: 0 -0.25rem;
-      padding: 0 0.25rem;
+    .ticket-list-wrap {
+      margin: 0;
     }
 
-    .data-table {
-      width: 100%;
-      border-collapse: collapse;
-      border: 2px solid var(--border-strong);
-      border-radius: var(--radius-md);
-      overflow: hidden;
-      background: var(--bg-elevated);
+    .ticket-list-wrap.is-empty #ticket-list {
+      display: none;
     }
 
-    .data-table thead th {
-      text-align: left;
-      font-size: 0.85rem;
-      font-weight: 600;
-      color: var(--text-secondary);
-      padding: 0.75rem 1rem;
-      border-bottom: 1px solid var(--border-subtle);
-      background: var(--bg-page);
+    .ticket-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
     }
 
-    .data-table tbody tr {
-      border-bottom: 1px solid var(--border-subtle);
-    }
-
-    .data-table tbody tr:last-child {
-      border-bottom: none;
-    }
-
-    .ticket-row td {
-      padding: 0.75rem 1rem;
-      vertical-align: middle;
-    }
-
-    .ticket-row {
+    .ticket-block {
+      margin: 0;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border-subtle);
       cursor: grab;
     }
 
-    .ticket-row.dragging {
+    .ticket-block.dragging {
       opacity: 0.55;
     }
 
-    .ticket-row:active {
+    .ticket-block:active {
       cursor: grabbing;
     }
 
-    .col-name {
-      font-weight: 600;
-      color: var(--text-primary);
+    /* Status-colored blocks (telegram-derived tickets) */
+    .ticket-block.ticket--red {
+      background: rgba(239, 68, 68, 0.18);
+      border-color: rgba(239, 68, 68, 0.45);
     }
 
-    .col-service {
+    .ticket-block.ticket--yellow {
+      background: rgba(234, 179, 8, 0.14);
+      border-color: rgba(234, 179, 8, 0.4);
+    }
+
+    .ticket-block-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 1rem 1.25rem;
+    }
+
+    .ticket-block-main {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .ticket-station-name {
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: var(--text-primary);
+      margin-bottom: 0.35rem;
+    }
+
+    .ticket-service {
+      font-size: 0.85rem;
       color: var(--text-secondary);
     }
 
-    .col-grip {
-      width: 2.5rem;
-      text-align: right;
+    .ticket-grip {
+      flex-shrink: 0;
       color: var(--text-muted);
       user-select: none;
-      font-size: 0.85rem;
+      font-size: 0.9rem;
+      opacity: 0.85;
     }
 
-    /* Chips — dark, bordered */
-    .chip {
-      display: inline-block;
+    .ticket-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-shrink: 0;
+    }
+
+    .btn-ticket-delete {
+      padding: 0.35rem 0.55rem;
       font-size: 0.75rem;
       font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      padding: 0.35rem 0.5rem;
+      font-family: inherit;
       border-radius: var(--radius-sm);
-      border: 1px solid var(--border-input);
-      background: var(--bg-muted);
+      border: 1px solid rgba(239, 68, 68, 0.5);
+      background: rgba(239, 68, 68, 0.12);
+      color: #fca5a5;
+      cursor: pointer;
+    }
+
+    .btn-ticket-delete:hover {
+      background: rgba(239, 68, 68, 0.22);
+    }
+
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(0, 0, 0, 0.65);
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+
+    .modal-backdrop.is-open {
+      display: flex;
+    }
+
+    .modal-panel {
+      width: 100%;
+      max-width: 420px;
+      background: var(--bg-page);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-lg);
+      padding: 1.25rem;
+    }
+
+    .modal-title {
+      margin: 0 0 1rem;
+      font-size: 1rem;
+      font-weight: 600;
       color: var(--text-primary);
     }
 
-    .chip-red {
-      border-color: rgba(239, 68, 68, 0.45);
-      color: #fca5a5;
-      background: rgba(239, 68, 68, 0.12);
+    .form-row {
+      margin-bottom: 1rem;
     }
 
-    .chip-yellow {
-      border-color: var(--border-strong);
+    .form-row label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 500;
       color: var(--text-secondary);
+      margin-bottom: 0.35rem;
+    }
+
+    .form-row select {
+      width: 100%;
       background: var(--bg-muted);
+      border: 1px solid var(--border-input);
+      color: var(--text-primary);
+      border-radius: var(--radius-sm);
+      padding: 0.5rem 0.75rem;
+      font-size: 0.9rem;
+      font-family: inherit;
+    }
+
+    .form-row select:focus {
+      outline: none;
+      border-color: var(--accent-primary);
+    }
+
+    .color-row {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .color-row label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      cursor: pointer;
+      margin-bottom: 0;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 0.5rem;
+      justify-content: flex-end;
+      margin-top: 1.25rem;
+    }
+
+    .modal-error {
+      font-size: 0.85rem;
+      color: var(--danger);
+      margin-bottom: 0.75rem;
+      min-height: 1.2em;
     }
 
     /* Buttons (for future actions) */
@@ -340,28 +409,6 @@
     }
 
     @media (max-width: 768px) {
-      .app-shell {
-        flex-direction: column;
-      }
-
-      .sidebar {
-        width: 100%;
-        border-right: none;
-        border-bottom: 1px solid var(--sidebar-border);
-        flex-direction: row;
-        align-items: center;
-        justify-content: space-between;
-        padding: 0.75rem 1rem;
-      }
-
-      .sidebar-nav {
-        flex-direction: row;
-      }
-
-      .kpi-value {
-        font-size: clamp(48px, 18vw, 75px);
-      }
-
       .main-wrap {
         padding: 1rem;
       }
@@ -369,33 +416,68 @@
       .btn {
         width: 100%;
       }
+
+      .modal-actions .btn {
+        width: auto;
+      }
     }
   </style>
 </head>
 <body>
   <div class="app-shell">
-    <aside class="sidebar" aria-label="Main navigation">
-      <div class="sidebar-brand">CUUB</div>
-      <nav class="sidebar-nav">
-        <a class="sidebar-link is-active" href="/">Maintenance</a>
-      </nav>
-    </aside>
-
     <div class="main-wrap">
       <main class="main-content">
         <header class="page-header">
-          <h1 class="page-title">Maintenance tickets</h1>
+          <div class="page-header-row">
+            <h1 class="page-title">Maintenance tickets</h1>
+            <button type="button" class="btn-add-ticket" id="btn-create-ticket" title="Create ticket" aria-label="Create ticket">+</button>
+          </div>
           <p class="page-desc">
             Stations that need servicing (yellow or red slot status), aligned with Telegram alerts.
             Drag rows to reorder the queue.
           </p>
         </header>
 
-        <section class="kpi-row" aria-live="polite">
-          <div class="card">
-            <div class="kpi-label">Active tickets</div>
+        <div id="modal-create" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modal-create-title" aria-hidden="true">
+          <div class="modal-panel">
+            <h2 id="modal-create-title" class="modal-title">Create ticket</h2>
+            <p id="modal-create-error" class="modal-error" aria-live="polite"></p>
+            <form id="form-create-ticket">
+              <div class="form-row">
+                <label for="create-station">Station</label>
+                <select id="create-station" name="station" required>
+                  <option value="">Select station</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label for="create-issue">Issue type</label>
+                <select id="create-issue" name="issue" required>
+                  <option value="">Select issue</option>
+                  <option value="Add stack">Add stack</option>
+                  <option value="Broken Battery">Broken Battery</option>
+                  <option value="High failure rates">High failure rates</option>
+                  <option value="hardware malfunction">hardware malfunction</option>
+                  <option value="unusually offline">unusually offline</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <span class="form-label-like" style="display:block;font-size:0.85rem;font-weight:500;color:var(--text-secondary);margin-bottom:0.35rem;">Color</span>
+                <div class="color-row">
+                  <label><input type="radio" name="create-color" value="yellow" /> Yellow</label>
+                  <label><input type="radio" name="create-color" value="red" /> Red</label>
+                </div>
+              </div>
+              <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" id="modal-create-cancel">Cancel</button>
+                <button type="submit" class="btn btn-primary">Add ticket</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <section class="kpi-row" aria-live="polite" aria-label="Active ticket count">
+          <div class="card kpi-card">
             <div class="kpi-value" id="ticket-count">0</div>
-            <p class="kpi-meta">Requires attention · slot capacity</p>
           </div>
         </section>
 
@@ -404,18 +486,8 @@
             <h2 class="card-title">Queue</h2>
             <p id="status-line" class="status"></p>
           </div>
-          <div class="table-wrap">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th scope="col">Station</th>
-                  <th scope="col">Service type</th>
-                  <th scope="col">Status</th>
-                  <th scope="col" aria-label="Reorder"></th>
-                </tr>
-              </thead>
-              <tbody id="ticket-list"></tbody>
-            </table>
+          <div class="ticket-list-wrap">
+            <ul id="ticket-list" class="ticket-list" aria-label="Maintenance tickets"></ul>
             <p id="ticket-empty" class="empty-state" hidden>No tickets in queue.</p>
           </div>
         </section>

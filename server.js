@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const { omitTestStationRows } = require('./stationFilters');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 require('dotenv').config({ path: path.join(__dirname, '.env.local') });
@@ -22,6 +23,9 @@ app.get('/api/stations', async (req, res) => {
       return res.status(r.status).json({ success: false, error: r.statusText });
     }
     const data = await r.json();
+    if (data.success && Array.isArray(data.data)) {
+      data.data = omitTestStationRows(data.data);
+    }
     res.json(data);
   } catch (err) {
     res.status(500).json({ success: false, error: err.message || String(err) });

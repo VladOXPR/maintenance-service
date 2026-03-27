@@ -14,6 +14,7 @@ if (typeof globalThis.fetch === 'undefined') {
 }
 
 const cron = require('node-cron');
+const { omitTestStationRows } = require('./stationFilters');
 
 // Telegram Bot Configuration
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8279022767:AAHPZ4IJE6Blcm3wuNW9L1-HEoY1QjNoQ8I';
@@ -90,8 +91,8 @@ async function fetchStations() {
     if (!data.success || !data.data) {
       throw new Error('Invalid API response format');
     }
-    
-    return data.data;
+
+    return omitTestStationRows(data.data);
   } catch (error) {
     console.error('Error fetching stations:', error);
     throw error;

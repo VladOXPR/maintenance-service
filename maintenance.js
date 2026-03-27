@@ -6,7 +6,52 @@
 /** Proxied by server.js (same payload as https://api.cuub.tech/stations). */
 const STATIONS_URL = '/api/stations';
 
-/** @typedef {{ id: string, stationId: string, stationName: string, latitude: number, longitude: number, serviceType: string, color: 'red' | 'yellow', source: string, sortOrder: number }} Ticket */
+/** Same rule as `stationFilters.js` — exclude lab / bogus rows. */
+function omitTestStationRows(stations) {
+  if (!Array.isArray(stations)) {
+    return stations;
+  }
+  return stations.filter((s) => String(s.title || '').trim().toUpperCase() !== 'TEST STATION');
+}
+
+/**
+ * Depot / route start (always index 0 in `routeOptimization.js`).
+ * Civic Opera House area — 20 North Wacker Drive, Chicago, IL (~41.8818, -87.6374).
+ */
+const HOME_BASE = Object.freeze({
+  id: 'home-civic-opera',
+  title: 'Civic Opera House — Home',
+  latitude: 41.8818,
+  longitude: -87.6374,
+});
+
+/**
+ * @typedef {{
+ *   id: string,
+ *   stationId: string,
+ *   stationName: string,
+ *   latitude: number,
+ *   longitude: number,
+ *   serviceType: string,
+ *   color: 'red' | 'yellow',
+ *   source: 'station-status' | 'manual',
+ *   sortOrder: number,
+ *   issueType?: string
+ * }} Ticket
+ */
+
+const ISSUE_TYPES = [
+  'Add stack',
+  'Broken Battery',
+  'High failure rates',
+  'hardware malfunction',
+  'unusually offline',
+];
+
+/** All stations for Create Ticket dropdown (set in init). */
+let allStationsForPicker = [];
+
+let manualTicketSeq = 0;
 
 function getTotalSlotsForStation(station) {
   const filledSlots = station.filled_slots;
@@ -109,8 +154,7 @@ function stationToTicket(station, sortOrder, color) {
   const lon = parseCoord(station.longitude);
   const sid = String(station.id ?? '');
   const name = station.title || 'Unknown';
-  const serviceType =
-    color === 'red' ? 'Slot capacity (critical)' : 'Slot capacity (attention)';
+  const serviceType = 'Battery Redistribution';
   return {
     id: `ticket-${sid}`,
     stationId: sid,
@@ -133,7 +177,7 @@ async function fetchStations() {
   if (!data.success || !Array.isArray(data.data)) {
     throw new Error('Invalid stations response');
   }
-  return data.data;
+  return omitTestStationRows(data.data);
 }
 
 /**
@@ -154,28 +198,44 @@ function buildTicketsFromStations(stations) {
 }
 
 /**
+ * Yellow/red tickets → locations for `routeOptimization.js`, with home first (fixed start).
  * @param {Ticket[]} tickets
  * @returns {{ id: string, title: string, latitude: number, longitude: number }[]}
  */
-function ticketsToRouteLocations(tickets) {
-  return tickets.map((t) => ({
-    id: t.stationId,
-    title: t.stationName,
-    latitude: t.latitude,
-    longitude: t.longitude,
-  }));
+function buildLocationsForRouteOptimization(tickets) {
+  const stationLocs = tickets
+    .filter((t) => Number.isFinite(t.latitude) && Number.isFinite(t.longitude))
+    .map((t) => ({
+      id: t.id,
+      title: t.stationName,
+      latitude: t.latitude,
+      longitude: t.longitude,
+    }));
+  return [
+    {
+      id: HOME_BASE.id,
+      title: HOME_BASE.title,
+      latitude: HOME_BASE.latitude,
+      longitude: HOME_BASE.longitude,
+    },
+    ...stationLocs,
+  ];
 }
 
 /**
- * Ask server for Mapbox route order (same as routeOptimization.js). Fails soft if unavailable.
- * @param {Ticket[]} tickets priority-ordered list
- * @returns {Promise<string[]|null>} ordered station ids, or null
+ * Mapbox matrix + nearest-neighbor via server (`routeOptimization.optimizeDrivingRoute`).
+ * Route always starts at {@link HOME_BASE}; response order includes home — strip it when applying to tickets.
+ * @param {Ticket[]} tickets
+ * @returns {Promise<{ orderedStationIds: string[] | null, summary: string | null }>}
  */
 async function fetchRouteOrderFromServer(tickets) {
   if (tickets.length === 0) {
-    return [];
+    return { orderedStationIds: [], summary: null };
   }
-  const locations = ticketsToRouteLocations(tickets);
+  const locations = buildLocationsForRouteOptimization(tickets);
+  if (locations.length < 2) {
+    return { orderedStationIds: null, summary: null };
+  }
   try {
     const res = await fetch('/api/maintenance-route-order', {
       method: 'POST',
@@ -185,43 +245,88 @@ async function fetchRouteOrderFromServer(tickets) {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       console.warn('Route order unavailable:', err.error || res.status);
-      return null;
+      return { orderedStationIds: null, summary: null };
     }
     const data = await res.json();
     if (!data.orderedStationIds || !Array.isArray(data.orderedStationIds)) {
-      return null;
+      return { orderedStationIds: null, summary: null };
     }
-    return data.orderedStationIds;
+    return {
+      orderedStationIds: data.orderedStationIds,
+      summary: data.summary || null,
+    };
   } catch (e) {
     console.warn('Route order request failed:', e.message);
-    return null;
+    return { orderedStationIds: null, summary: null };
   }
 }
 
 /**
+ * Reorder tickets to match optimized stop order (excluding home id).
  * @param {Ticket[]} tickets
- * @param {string[]} orderedStationIds
+ * @param {string[]} orderedStationIds from route (includes home first in visit order)
+ * @param {string} homeId
  */
-function applyStationOrder(tickets, orderedStationIds) {
-  const byId = new Map(tickets.map((t) => [t.stationId, t]));
+function applyStationOrder(tickets, orderedIds, homeId) {
+  const byId = new Map(tickets.map((t) => [t.id, t]));
   const next = [];
-  for (const sid of orderedStationIds) {
-    const t = byId.get(sid);
+  for (const oid of orderedIds) {
+    if (oid === homeId) {
+      continue;
+    }
+    const t = byId.get(oid);
     if (t) {
       next.push(t);
-      byId.delete(sid);
+      byId.delete(t.id);
     }
   }
   for (const t of tickets) {
-    if (byId.has(t.stationId)) {
+    if (byId.has(t.id)) {
       next.push(t);
-      byId.delete(t.stationId);
+      byId.delete(t.id);
     }
   }
   next.forEach((t, i) => {
     t.sortOrder = i;
   });
   return next;
+}
+
+function populateStationSelect() {
+  const sel = document.getElementById('create-station');
+  if (!sel) {
+    return;
+  }
+  sel.innerHTML = '<option value="">Select station</option>';
+  for (const s of allStationsForPicker) {
+    const opt = document.createElement('option');
+    opt.value = String(s.id ?? '');
+    opt.textContent = s.title || opt.value;
+    sel.appendChild(opt);
+  }
+}
+
+/**
+ * Re-fetch optimized order for the current ticket list and redraw.
+ */
+async function recalculateRoute() {
+  if (tickets.length === 0) {
+    setStatus('No stations require servicing right now.');
+    renderTickets();
+    return;
+  }
+  const { orderedStationIds } = await fetchRouteOrderFromServer(tickets);
+  if (orderedStationIds && orderedStationIds.length > 0) {
+    tickets = applyStationOrder(tickets, orderedStationIds, HOME_BASE.id);
+    setStatus(
+      'Queue order: shortest driving loop from Civic Opera House (20 N Wacker), returning home. Drag rows to reorder.',
+    );
+  } else {
+    setStatus(
+      'Showing priority order (route optimization unavailable — set MAPBOX_ACCESS_TOKEN on the server). Drag rows to reorder.',
+    );
+  }
+  renderTickets();
 }
 
 // --- UI state ---
@@ -257,7 +362,7 @@ function renderTickets() {
   const list = document.getElementById('ticket-list');
   const countEl = document.getElementById('ticket-count');
   const emptyEl = document.getElementById('ticket-empty');
-  const tableEl = document.querySelector('.data-table');
+  const listWrap = document.querySelector('.ticket-list-wrap');
   if (!list || !countEl) {
     return;
   }
@@ -268,8 +373,8 @@ function renderTickets() {
     if (emptyEl) {
       emptyEl.hidden = false;
     }
-    if (tableEl) {
-      tableEl.hidden = true;
+    if (listWrap) {
+      listWrap.classList.add('is-empty');
     }
     return;
   }
@@ -277,18 +382,23 @@ function renderTickets() {
   if (emptyEl) {
     emptyEl.hidden = true;
   }
-  if (tableEl) {
-    tableEl.hidden = false;
+  if (listWrap) {
+    listWrap.classList.remove('is-empty');
   }
 
   tickets.forEach((ticket) => {
-    const row = el('tr', {
-      className: 'ticket-row',
+    const statusClass = ticket.color === 'red' ? 'ticket--red' : 'ticket--yellow';
+    const row = el('li', {
+      className: `ticket-block ticket-row ${statusClass}`,
       draggable: 'true',
       'data-ticket-id': ticket.id,
     });
 
     row.addEventListener('dragstart', (e) => {
+      if (e.target.closest && e.target.closest('.btn-ticket-delete')) {
+        e.preventDefault();
+        return;
+      }
       draggedTicketId = ticket.id;
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', ticket.id);
@@ -326,15 +436,31 @@ function renderTickets() {
       renderTickets();
     });
 
-    const colorClass = ticket.color === 'red' ? 'chip-red' : 'chip-yellow';
-    row.appendChild(el('td', { className: 'col-name', text: ticket.stationName }));
-    row.appendChild(el('td', { className: 'col-service', text: ticket.serviceType }));
-    row.appendChild(
-      el('td', {}, [
-        el('span', { className: `chip ${colorClass}`, text: ticket.color }),
+    const actionsChildren = [];
+    if (ticket.source === 'manual') {
+      actionsChildren.push(
+        el('button', {
+          type: 'button',
+          className: 'btn-ticket-delete',
+          text: 'Delete',
+          onclick: (ev) => {
+            ev.stopPropagation();
+            tickets = tickets.filter((t) => t.id !== ticket.id);
+            void recalculateRoute();
+          },
+        }),
+      );
+    }
+    actionsChildren.push(el('span', { className: 'ticket-grip', text: '⋮⋮' }));
+
+    const inner = el('div', { className: 'ticket-block-inner' }, [
+      el('div', { className: 'ticket-block-main' }, [
+        el('div', { className: 'ticket-station-name', text: ticket.stationName }),
+        el('div', { className: 'ticket-service', text: ticket.serviceType }),
       ]),
-    );
-    row.appendChild(el('td', { className: 'col-grip', text: '⋮⋮' }));
+      el('div', { className: 'ticket-actions' }, actionsChildren),
+    ]);
+    row.appendChild(inner);
     list.appendChild(row);
   });
 }
@@ -348,25 +474,126 @@ function setStatus(message, isError) {
   s.className = isError ? 'status error' : 'status';
 }
 
+function openCreateTicketModal() {
+  const modal = document.getElementById('modal-create');
+  const err = document.getElementById('modal-create-error');
+  const form = document.getElementById('form-create-ticket');
+  if (!modal) {
+    return;
+  }
+  if (err) {
+    err.textContent = '';
+  }
+  if (form) {
+    form.reset();
+  }
+  modal.classList.add('is-open');
+  modal.setAttribute('aria-hidden', 'false');
+}
+
+function closeCreateTicketModal() {
+  const modal = document.getElementById('modal-create');
+  const err = document.getElementById('modal-create-error');
+  if (!modal) {
+    return;
+  }
+  if (err) {
+    err.textContent = '';
+  }
+  modal.classList.remove('is-open');
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+function setupCreateTicketUI() {
+  const btn = document.getElementById('btn-create-ticket');
+  const modal = document.getElementById('modal-create');
+  const form = document.getElementById('form-create-ticket');
+  const cancel = document.getElementById('modal-create-cancel');
+  const err = document.getElementById('modal-create-error');
+
+  if (btn) {
+    btn.addEventListener('click', () => openCreateTicketModal());
+  }
+  if (cancel) {
+    cancel.addEventListener('click', () => closeCreateTicketModal());
+  }
+  if (modal) {
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        closeCreateTicketModal();
+      }
+    });
+  }
+  if (form) {
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!err) {
+        return;
+      }
+      err.textContent = '';
+
+      const stationId = form.station.value.trim();
+      const issue = form.issue.value.trim();
+      const colorRadio = form.querySelector('input[name="create-color"]:checked');
+
+      if (!stationId) {
+        err.textContent = 'Select a station.';
+        return;
+      }
+      if (!issue) {
+        err.textContent = 'Select an issue type.';
+        return;
+      }
+      if (!ISSUE_TYPES.includes(issue)) {
+        err.textContent = 'Invalid issue type.';
+        return;
+      }
+      if (!colorRadio || (colorRadio.value !== 'yellow' && colorRadio.value !== 'red')) {
+        err.textContent = 'Select yellow or red.';
+        return;
+      }
+
+      const station = allStationsForPicker.find((s) => String(s.id ?? '') === stationId);
+      if (!station) {
+        err.textContent = 'Invalid station.';
+        return;
+      }
+      const lat = parseCoord(station.latitude);
+      const lon = parseCoord(station.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        err.textContent = 'Station has no valid coordinates.';
+        return;
+      }
+
+      manualTicketSeq += 1;
+      const color = colorRadio.value;
+      const ticket = {
+        id: `ticket-manual-${manualTicketSeq}-${Date.now()}`,
+        stationId: String(station.id ?? ''),
+        stationName: station.title || 'Unknown',
+        latitude: lat,
+        longitude: lon,
+        serviceType: issue,
+        issueType: issue,
+        color,
+        source: 'manual',
+        sortOrder: tickets.length,
+      };
+      tickets.push(ticket);
+      closeCreateTicketModal();
+      void recalculateRoute();
+    });
+  }
+}
+
 async function init() {
   setStatus('');
   try {
     const stations = await fetchStations();
+    allStationsForPicker = stations;
+    populateStationSelect();
     tickets = buildTicketsFromStations(stations);
-
-    if (tickets.length > 0) {
-      const orderIds = await fetchRouteOrderFromServer(tickets);
-      if (orderIds && orderIds.length > 0) {
-        tickets = applyStationOrder(tickets, orderIds);
-        setStatus('Route order optimized (Mapbox). Drag rows to reorder.');
-      } else {
-        setStatus('Priority order (route API unavailable). Drag rows to reorder.');
-      }
-    } else {
-      setStatus('No stations require servicing right now.');
-    }
-
-    renderTickets();
+    await recalculateRoute();
   } catch (e) {
     console.error(e);
     setStatus(e.message || 'Failed to load', true);
@@ -374,6 +601,8 @@ async function init() {
     renderTickets();
   }
 }
+
+setupCreateTicketUI();
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', init);
