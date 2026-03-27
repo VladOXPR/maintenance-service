@@ -96,10 +96,55 @@ async function fetchStations() {
   }
 }
 
+function getTotalSlotsForStation(station) {
+  const filledSlots = station.filled_slots;
+  const openSlots = station.open_slots;
+  if (filledSlots !== null && filledSlots !== undefined && openSlots !== null && openSlots !== undefined) {
+    const f = typeof filledSlots === 'string' ? parseInt(filledSlots, 10) : Number(filledSlots);
+    const o = typeof openSlots === 'string' ? parseInt(openSlots, 10) : Number(openSlots);
+    if (!isNaN(f) && !isNaN(o)) {
+      return f + o;
+    }
+  }
+  return 6;
+}
+
+/**
+ * 6-slot (default): green ≥4, yellow 3, red ≤2.
+ * 24-slot: green 6–18; yellow at 5 and 19–21; red 0–4 or >21.
+ * (Spec "yellow between 6 & 4" treated as 5; 19–21 fills the gap before red >21.)
+ * @returns {'red'|'yellow'|'green'|null}
+ */
+function getFilledSlotHealthLevel(totalSlots, filledSlotsNum) {
+  if (isNaN(filledSlotsNum)) {
+    return null;
+  }
+  if (totalSlots === 24) {
+    if (filledSlotsNum <= 4 || filledSlotsNum > 21) {
+      return 'red';
+    }
+    if (filledSlotsNum >= 6 && filledSlotsNum <= 18) {
+      return 'green';
+    }
+    if (filledSlotsNum === 5 || (filledSlotsNum >= 19 && filledSlotsNum <= 21)) {
+      return 'yellow';
+    }
+    return null;
+  }
+  if (filledSlotsNum >= 4) {
+    return 'green';
+  }
+  if (filledSlotsNum === 3) {
+    return 'yellow';
+  }
+  if (filledSlotsNum <= 2) {
+    return 'red';
+  }
+  return null;
+}
+
 /**
  * Generate Apple Maps route link with red and yellow stations as stops
- * Red stations are those with 0, 1, or 2 filled slots
- * Yellow stations are those with 3 filled slots
  * @param {Array} stations - Array of station objects with latitude/longitude
  * @returns {string} - Apple Maps URL with red and yellow stations as route stops
  */
@@ -115,17 +160,18 @@ function generateRouteLink(stations) {
       return false;
     }
     
-    // Check if it's a red or yellow station
     const filledSlots = station.filled_slots;
     if (filledSlots === null || filledSlots === undefined || filledSlots === 'N/A') {
       return false;
     }
     
-    // Convert to number if it's a string
     const filledSlotsNum = typeof filledSlots === 'string' ? parseInt(filledSlots, 10) : filledSlots;
-    
-    // Red stations (0-2) and yellow stations (3)
-    return !isNaN(filledSlotsNum) && filledSlotsNum <= 3;
+    if (isNaN(filledSlotsNum)) {
+      return false;
+    }
+    const totalSlots = getTotalSlotsForStation(station);
+    const level = getFilledSlotHealthLevel(totalSlots, filledSlotsNum);
+    return level === 'red' || level === 'yellow';
   });
   
   if (redYellowStations.length === 0) {
@@ -147,30 +193,31 @@ function generateRouteLink(stations) {
  * @returns {string} - Formatted message text
  */
 /**
- * Get station priority for sorting (lower number = higher priority)
- * Red (0,1,2 slots) = 1, Yellow (3 slots) = 2, Green (4,5 slots) = 3
+ * Sort: red first, then yellow, then green (same thresholds as getFilledSlotHealthLevel).
  */
 function getStationPriority(station) {
   const filledSlots = station.filled_slots;
   if (filledSlots === null || filledSlots === undefined || filledSlots === 'N/A') {
-    return 4; // Unknown/N/A stations go last
+    return 4;
   }
   
   const filledSlotsNum = typeof filledSlots === 'string' ? parseInt(filledSlots, 10) : filledSlots;
-  
   if (isNaN(filledSlotsNum)) {
     return 4;
   }
   
-  if (filledSlotsNum >= 4) {
-    return 3; // Green - lowest priority
-  } else if (filledSlotsNum === 3) {
-    return 2; // Yellow - medium priority
-  } else if (filledSlotsNum <= 2) {
-    return 1; // Red - highest priority
+  const totalSlots = getTotalSlotsForStation(station);
+  const level = getFilledSlotHealthLevel(totalSlots, filledSlotsNum);
+  if (level === 'red') {
+    return 1;
   }
-  
-  return 4; // Default
+  if (level === 'yellow') {
+    return 2;
+  }
+  if (level === 'green') {
+    return 3;
+  }
+  return 4;
 }
 
 function formatStationStatus(stations) {
@@ -178,21 +225,19 @@ function formatStationStatus(stations) {
     return 'No stations found.';
   }
   
-  // Filter to only include red and yellow stations (exclude green stations)
   const redYellowStations = stations.filter(station => {
     const filledSlots = station.filled_slots;
     if (filledSlots === null || filledSlots === undefined || filledSlots === 'N/A') {
-      return false; // Exclude stations with unknown status
+      return false;
     }
     
     const filledSlotsNum = typeof filledSlots === 'string' ? parseInt(filledSlots, 10) : filledSlots;
-    
     if (isNaN(filledSlotsNum)) {
-      return false; // Exclude stations with invalid numbers
+      return false;
     }
-    
-    // Only include red (0-2) and yellow (3) stations, exclude green (4-5)
-    return filledSlotsNum <= 3;
+    const totalSlots = getTotalSlotsForStation(station);
+    const level = getFilledSlotHealthLevel(totalSlots, filledSlotsNum);
+    return level === 'red' || level === 'yellow';
   });
   
   // Sort stations: Red first, then Yellow (when we have any)
@@ -215,38 +260,25 @@ function formatStationStatus(stations) {
       ? station.open_slots 
       : 0;
     
-    // Calculate total slots (filled + open, default to 6 if not available)
-    const totalSlots = (filledSlots !== null && openSlots !== null && filledSlots !== undefined && openSlots !== undefined)
-      ? filledSlots + openSlots
-      : 6;
-    
-    // Determine color square based on filled slots
-    // Convert to number if it's a string
-    let colorSquare = '';
+    const totalSlots = getTotalSlotsForStation(station);
     const filledSlotsNum = typeof filledSlots === 'string' ? parseInt(filledSlots, 10) : filledSlots;
-    
-    if (!isNaN(filledSlotsNum)) {
-      if (filledSlotsNum >= 4) {
-        colorSquare = '🟢'; // Green for 4 or 5 filled slots
-      } else if (filledSlotsNum === 3) {
-        colorSquare = '🟨'; // Yellow for 3 filled slots
-      } else if (filledSlotsNum <= 2) {
-        colorSquare = '🟥'; // Red for 0, 1, or 2 filled slots
-      } else if (filledSlotsNum === 6) {
-        colorSquare = '🟥'; // Red for 0, 1, or 2 filled slots
+    const health = getFilledSlotHealthLevel(totalSlots, filledSlotsNum);
+
+    let colorSquare = '';
+    if (health === 'green') {
+      colorSquare = '🟢';
+    } else if (health === 'yellow') {
+      colorSquare = '🟨';
+    } else if (health === 'red') {
+      colorSquare = '🟥';
     }
-    
-    // Format: Station Name
-    // Color Filled: X / 6 (or X/6 for red stations based on example)
+
     message += `${title}\n`;
-    if (filledSlotsNum <= 2) {
-      // Red stations: just show X/6
+    if (health === 'red') {
       message += `${colorSquare} ${filledSlotsNum}/${totalSlots}\n\n`;
-    } else if (filledSlotsNum === 3) {
-      // Yellow stations: show Filled: X / 6
+    } else if (health === 'yellow') {
       message += `${colorSquare} Filled: ${filledSlotsNum} / ${totalSlots}\n\n`;
     } else {
-      // Green stations (shouldn't appear, but just in case)
       message += `${colorSquare} Filled: ${filledSlotsNum} / ${totalSlots}\n\n`;
     }
   });
