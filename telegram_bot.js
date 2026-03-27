@@ -144,55 +144,6 @@ function getFilledSlotHealthLevel(totalSlots, filledSlotsNum) {
 }
 
 /**
- * Generate Apple Maps route link with red and yellow stations as stops
- * @param {Array} stations - Array of station objects with latitude/longitude
- * @returns {string} - Apple Maps URL with red and yellow stations as route stops
- */
-function generateRouteLink(stations) {
-  if (!stations || stations.length === 0) {
-    return null;
-  }
-  
-  // Filter for red and yellow stations with valid coordinates
-  const redYellowStations = stations.filter(station => {
-    // Must have valid coordinates
-    if (!station.latitude || !station.longitude) {
-      return false;
-    }
-    
-    const filledSlots = station.filled_slots;
-    if (filledSlots === null || filledSlots === undefined || filledSlots === 'N/A') {
-      return false;
-    }
-    
-    const filledSlotsNum = typeof filledSlots === 'string' ? parseInt(filledSlots, 10) : filledSlots;
-    if (isNaN(filledSlotsNum)) {
-      return false;
-    }
-    const totalSlots = getTotalSlotsForStation(station);
-    const level = getFilledSlotHealthLevel(totalSlots, filledSlotsNum);
-    return level === 'red' || level === 'yellow';
-  });
-  
-  if (redYellowStations.length === 0) {
-    return null;
-  }
-  
-  // Apple Maps supports multiple destinations by repeating daddr parameter
-  // Format: http://maps.apple.com/?daddr=lat1,lon1&daddr=lat2,lon2&daddr=lat3,lon3
-  const destinations = redYellowStations
-    .map(station => `daddr=${station.latitude},${station.longitude}`)
-    .join('&');
-  
-  return `http://maps.apple.com/?${destinations}`;
-}
-
-/**
- * Format station status message
- * @param {Array} stations - Array of station objects
- * @returns {string} - Formatted message text
- */
-/**
  * Sort: red first, then yellow, then green (same thresholds as getFilledSlotHealthLevel).
  */
 function getStationPriority(station) {
@@ -291,12 +242,6 @@ function formatStationStatus(stations) {
       const title = station.title || 'Unknown';
       message += `${title}\n🔴 Offline\n\n`;
     });
-  }
-  
-  // Add route link with red and yellow stations
-  const routeLink = generateRouteLink(stations);
-  if (routeLink) {
-    message += `Link\n${routeLink}`;
   }
   
   return message;
@@ -549,7 +494,6 @@ module.exports = {
   sendStationStatus,
   fetchStations,
   formatStationStatus,
-  generateRouteLink,
   getUpdates,
   getChatId,
   scheduleDailyTelegramReport,
