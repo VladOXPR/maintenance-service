@@ -232,7 +232,8 @@ function formatStationStatus(stations) {
         colorSquare = '🟨'; // Yellow for 3 filled slots
       } else if (filledSlotsNum <= 2) {
         colorSquare = '🟥'; // Red for 0, 1, or 2 filled slots
-      }
+      } else if (filledSlotsNum === 6) {
+        colorSquare = '🟥'; // Red for 0, 1, or 2 filled slots
     }
     
     // Format: Station Name
@@ -488,17 +489,6 @@ function startTelegramCommandPolling() {
                 }
               }
             }
-            // Handle /gay command
-            else if (messageText === '/gay' || messageText.startsWith('/gay@') || messageText.startsWith('/gay ')) {
-              console.log(`📨 /gay command detected from chat: ${chatTitle} (${chatId})`);
-              try {
-                await sendMessage(chatId.toString(), 'Yes');
-                console.log(`✅ /gay response sent to chat ${chatId}`);
-              } catch (error) {
-                console.error(`❌ Error sending /gay response to chat ${chatId}:`, error.message);
-                console.error('Error stack:', error.stack);
-              }
-            }
           }
         }
       }
@@ -513,7 +503,7 @@ function startTelegramCommandPolling() {
   
   console.log('🤖 Starting Telegram bot command polling...');
   console.log(`   Bot token: ${BOT_TOKEN.substring(0, 10)}...${BOT_TOKEN.substring(BOT_TOKEN.length - 5)}`);
-  console.log('   Listening for /status and /gay commands');
+  console.log('   Listening for /status command');
   console.log('   Starting in 10 seconds...');
   
   // Start polling after a short delay
