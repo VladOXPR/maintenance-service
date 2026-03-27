@@ -13,6 +13,8 @@ if (typeof globalThis.fetch === 'undefined') {
   fetch = globalThis.fetch;
 }
 
+const cron = require('node-cron');
+
 // Telegram Bot Configuration
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8279022767:AAHPZ4IJE6Blcm3wuNW9L1-HEoY1QjNoQ8I';
 const TELEGRAM_API_BASE = `https://api.telegram.org/bot${BOT_TOKEN}`;
@@ -329,66 +331,34 @@ async function getChatId() {
 }
 
 // ========================================
-// DAILY TELEGRAM STATUS REPORT SCHEDULER
+// TELEGRAM STATUS REPORT SCHEDULER (CHICAGO TIME)
 // ========================================
 
-/**
- * Calculate milliseconds until next 6 AM
- * @param {Date} now - Current date/time
- * @returns {number} - Milliseconds until next 6 AM
- */
-function getMillisecondsUntil6AM(now = new Date()) {
-  const next6AM = new Date(now);
-  next6AM.setHours(6, 0, 0, 0); // Set to 6:00:00 AM
-  
-  // If it's already past 6 AM today, schedule for tomorrow
-  if (now >= next6AM) {
-    next6AM.setDate(next6AM.getDate() + 1);
-  }
-  
-  return next6AM.getTime() - now.getTime();
-}
+const CHICAGO_TZ = 'America/Chicago';
 
 /**
- * Schedule daily Telegram status report at 6 AM
+ * Twice daily at 6:00 AM and 4:00 PM America/Chicago (handles DST).
  */
 function scheduleDailyTelegramReport() {
   const DEFAULT_CHAT_ID = '-5202000799'; // CUUB_Alert group
   const chatId = process.env.TELEGRAM_CHAT_ID || DEFAULT_CHAT_ID;
-  
-  const sendDailyReport = async () => {
+
+  const sendScheduledReport = async (label) => {
     try {
-      console.log('📨 Sending daily Telegram status report...');
+      console.log(`📨 Sending Telegram status report (${label} ${CHICAGO_TZ})...`);
       await sendStationStatus(chatId);
-      console.log('✅ Daily Telegram status report sent successfully');
+      console.log(`✅ Telegram status report sent successfully (${label})`);
     } catch (error) {
-      console.error('❌ Error sending daily Telegram report:', error.message);
+      console.error('❌ Error sending scheduled Telegram report:', error.message);
     }
-    
-    // Schedule next report for tomorrow at 6 AM
-    scheduleNextDailyReport();
   };
-  
-  const scheduleNextDailyReport = () => {
-    const msUntil6AM = getMillisecondsUntil6AM();
-    const hoursUntil6AM = Math.floor(msUntil6AM / (1000 * 60 * 60));
-    const minutesUntil6AM = Math.floor((msUntil6AM % (1000 * 60 * 60)) / (1000 * 60));
-    
-    console.log(`⏰ Next daily Telegram report scheduled in ${hoursUntil6AM}h ${minutesUntil6AM}m (at 6:00 AM)`);
-    
-    setTimeout(sendDailyReport, msUntil6AM);
-  };
-  
-  // Calculate time until next 6 AM and schedule
-  const msUntil6AM = getMillisecondsUntil6AM();
-  const hoursUntil6AM = Math.floor(msUntil6AM / (1000 * 60 * 60));
-  const minutesUntil6AM = Math.floor((msUntil6AM % (1000 * 60 * 60)) / (1000 * 60));
-  
-  console.log(`📅 Daily Telegram status report scheduler initialized`);
-  console.log(`   First report will be sent in ${hoursUntil6AM}h ${minutesUntil6AM}m (at 6:00 AM)`);
-  
-  // Schedule the first report
-  setTimeout(sendDailyReport, msUntil6AM);
+
+  const cronOpts = { timezone: CHICAGO_TZ };
+
+  cron.schedule('0 6 * * *', () => sendScheduledReport('6:00 AM'), cronOpts);
+  cron.schedule('0 16 * * *', () => sendScheduledReport('4:00 PM'), cronOpts);
+
+  console.log(`📅 Telegram status reports scheduled: 6:00 AM and 4:00 PM (${CHICAGO_TZ})`);
 }
 
 // ========================================
