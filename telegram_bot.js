@@ -113,37 +113,22 @@ function getTotalSlotsForStation(station) {
 }
 
 /**
- * 6-slot (default): green ≥4, yellow 3, red ≤2.
- * 24-slot: green 6–18; yellow at 5 and 19–21; red 0–4 or >21.
- * (Spec "yellow between 6 & 4" treated as 5; 19–21 fills the gap before red >21.)
+ * Capacity = filled / total. Red if empty (0%) or full (100%). Yellow if in (0%, 33%] (low fill).
+ * Green if above 33% and below full.
  * @returns {'red'|'yellow'|'green'|null}
  */
 function getFilledSlotHealthLevel(totalSlots, filledSlotsNum) {
-  if (isNaN(filledSlotsNum)) {
+  if (isNaN(filledSlotsNum) || isNaN(totalSlots) || totalSlots <= 0) {
     return null;
   }
-  if (totalSlots === 24) {
-    if (filledSlotsNum <= 4 || filledSlotsNum > 21) {
-      return 'red';
-    }
-    if (filledSlotsNum >= 6 && filledSlotsNum <= 18) {
-      return 'green';
-    }
-    if (filledSlotsNum === 5 || (filledSlotsNum >= 19 && filledSlotsNum <= 21)) {
-      return 'yellow';
-    }
-    return null;
-  }
-  if (filledSlotsNum >= 4) {
-    return 'green';
-  }
-  if (filledSlotsNum === 3) {
-    return 'yellow';
-  }
-  if (filledSlotsNum <= 2) {
+  if (filledSlotsNum <= 0 || filledSlotsNum >= totalSlots) {
     return 'red';
   }
-  return null;
+  const pctFull = filledSlotsNum / totalSlots;
+  if (pctFull <= 1 / 3) {
+    return 'yellow';
+  }
+  return 'green';
 }
 
 /**

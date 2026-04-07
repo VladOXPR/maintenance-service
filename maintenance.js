@@ -298,32 +298,23 @@ function getTotalSlotsForStation(station) {
   return 6;
 }
 
+/**
+ * Capacity = filled / total. Red if empty (0%) or full (100%). Yellow if in (0%, 33%] (low fill).
+ * Green if above 33% and below full. (Keep in sync with telegram_bot.js.)
+ * @returns {'red'|'yellow'|'green'|null}
+ */
 function getFilledSlotHealthLevel(totalSlots, filledSlotsNum) {
-  if (isNaN(filledSlotsNum)) {
+  if (isNaN(filledSlotsNum) || isNaN(totalSlots) || totalSlots <= 0) {
     return null;
   }
-  if (totalSlots === 24) {
-    if (filledSlotsNum <= 4 || filledSlotsNum > 21) {
-      return 'red';
-    }
-    if (filledSlotsNum >= 6 && filledSlotsNum <= 18) {
-      return 'green';
-    }
-    if (filledSlotsNum === 5 || (filledSlotsNum >= 19 && filledSlotsNum <= 21)) {
-      return 'yellow';
-    }
-    return null;
-  }
-  if (filledSlotsNum >= 4) {
-    return 'green';
-  }
-  if (filledSlotsNum === 3) {
-    return 'yellow';
-  }
-  if (filledSlotsNum <= 2) {
+  if (filledSlotsNum <= 0 || filledSlotsNum >= totalSlots) {
     return 'red';
   }
-  return null;
+  const pctFull = filledSlotsNum / totalSlots;
+  if (pctFull <= 1 / 3) {
+    return 'yellow';
+  }
+  return 'green';
 }
 
 function getStationPriority(station) {
