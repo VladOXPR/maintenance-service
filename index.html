@@ -290,6 +290,8 @@
     }
 
     .modal-panel {
+      position: relative;
+      z-index: 1;
       width: 100%;
       max-width: 420px;
       background: var(--bg-page);
@@ -333,18 +335,29 @@
       border-color: var(--accent-primary);
     }
 
-    .color-row {
-      display: flex;
-      gap: 1rem;
-      flex-wrap: wrap;
+    .form-row textarea {
+      width: 100%;
+      background: var(--bg-muted);
+      border: 1px solid var(--border-input);
+      color: var(--text-primary);
+      border-radius: var(--radius-sm);
+      padding: 0.5rem 0.75rem;
+      font-size: 0.9rem;
+      font-family: inherit;
+      resize: vertical;
+      min-height: 2.75rem;
     }
 
-    .color-row label {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-      cursor: pointer;
-      margin-bottom: 0;
+    .form-row textarea:focus {
+      outline: none;
+      border-color: var(--accent-primary);
+    }
+
+    .form-station-hint {
+      margin: 0.35rem 0 0;
+      font-size: 0.8rem;
+      color: var(--text-tertiary);
+      line-height: 1.35;
     }
 
     .modal-actions {
@@ -448,24 +461,26 @@
                 <select id="create-station" name="station" required>
                   <option value="">Select station</option>
                 </select>
+                <p id="create-station-id-hint" class="form-station-hint">Choose a station — its ID is sent with the ticket.</p>
               </div>
               <div class="form-row">
                 <label for="create-issue">Issue type</label>
                 <select id="create-issue" name="issue" required>
                   <option value="">Select issue</option>
-                  <option value="Add stack">Add stack</option>
+                  <option value="High Batteries">High Batteries</option>
+                  <option value="Low Batteries">Low Batteries</option>
+                  <option value="No Batteries">No Batteries</option>
+                  <option value="Add Stack">Add Stack</option>
                   <option value="Broken Battery">Broken Battery</option>
-                  <option value="High failure rates">High failure rates</option>
-                  <option value="hardware malfunction">hardware malfunction</option>
-                  <option value="unusually offline">unusually offline</option>
+                  <option value="High Failure Rates">High Failure Rates</option>
+                  <option value="Hardware Malfunction">Hardware Malfunction</option>
+                  <option value="Unusually Offline">Unusually Offline</option>
+                  <option value="Other">Other</option>
                 </select>
               </div>
               <div class="form-row">
-                <span class="form-label-like" style="display:block;font-size:0.85rem;font-weight:500;color:var(--text-secondary);margin-bottom:0.35rem;">Color</span>
-                <div class="color-row">
-                  <label><input type="radio" name="create-color" value="yellow" /> Yellow</label>
-                  <label><input type="radio" name="create-color" value="red" /> Red</label>
-                </div>
+                <label for="create-description">Description (optional)</label>
+                <textarea id="create-description" name="description" rows="2" placeholder="Notes for the team"></textarea>
               </div>
               <div class="modal-actions">
                 <button type="button" class="btn btn-secondary" id="modal-create-cancel">Cancel</button>

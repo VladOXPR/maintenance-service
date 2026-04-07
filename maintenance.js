@@ -6,6 +6,9 @@
 /** Proxied by server.js (same payload as https://api.cuub.tech/stations). */
 const STATIONS_URL = '/api/stations';
 
+/** Proxied by server.js → https://api.cuub.tech/tickets */
+const TICKETS_URL = '/api/tickets';
+
 /** Same rule as `stationFilters.js` — exclude lab / bogus rows. */
 function omitTestStationRows(stations) {
   if (!Array.isArray(stations)) {
@@ -34,24 +37,60 @@ const HOME_BASE = Object.freeze({
  *   longitude: number,
  *   serviceType: string,
  *   color: 'red' | 'yellow',
- *   source: 'station-status' | 'manual',
+ *   source: 'station-status' | 'database',
  *   sortOrder: number,
- *   issueType?: string
+ *   dbId?: number
  * }} Ticket
  */
 
-const ISSUE_TYPES = [
-  'Add stack',
+/** Must match Postgres enum on api.cuub.tech (Create ticket body). */
+const TASK_TYPES = [
+  'High Batteries',
+  'Low Batteries',
+  'No Batteries',
+  'Add Stack',
   'Broken Battery',
-  'High failure rates',
-  'hardware malfunction',
-  'unusually offline',
+  'High Failure Rates',
+  'Hardware Malfunction',
+  'Unusually Offline',
+  'Other',
 ];
 
 /** All stations for Create Ticket dropdown (set in init). */
 let allStationsForPicker = [];
 
-let manualTicketSeq = 0;
+/** Station id (string) → API row — used so `station_id` always matches the chosen name. */
+let stationsById = new Map();
+
+function rebuildStationsById() {
+  stationsById = new Map();
+  for (const s of allStationsForPicker) {
+    if (s == null || s.id == null) {
+      continue;
+    }
+    const id = String(s.id).trim();
+    if (!id) {
+      continue;
+    }
+    stationsById.set(id, s);
+  }
+}
+
+function updateCreateStationHint() {
+  const sel = document.getElementById('create-station');
+  const hint = document.getElementById('create-station-id-hint');
+  if (!hint) {
+    return;
+  }
+  if (!sel || !sel.value.trim()) {
+    hint.textContent = 'Choose a station — its ID is sent with the ticket.';
+    return;
+  }
+  const sid = sel.value.trim();
+  const st = stationsById.get(sid);
+  const label = st && String(st.title || '').trim() ? st.title : sid;
+  hint.textContent = `Using station ID ${sid} — ${label}`;
+}
 
 function getTotalSlotsForStation(station) {
   const filledSlots = station.filled_slots;
@@ -180,6 +219,77 @@ async function fetchStations() {
   return omitTestStationRows(data.data);
 }
 
+async function fetchTicketsList() {
+  const res = await fetch(TICKETS_URL);
+  if (!res.ok) {
+    throw new Error(`Tickets request failed: ${res.status}`);
+  }
+  const data = await res.json();
+  if (!data.success || !Array.isArray(data.data)) {
+    throw new Error('Invalid tickets response');
+  }
+  return data.data;
+}
+
+function taskToColor(task) {
+  const red = new Set(['Low Batteries', 'No Batteries', 'Broken Battery', 'Unusually Offline']);
+  return red.has(String(task || '')) ? 'red' : 'yellow';
+}
+
+/**
+ * @param {object} row API ticket row
+ * @param {number} sortOrder
+ * @returns {Ticket}
+ */
+function apiTicketToTicket(row, sortOrder) {
+  const lat = parseCoord(row.latitude);
+  const lon = parseCoord(row.longitude);
+  const dbId = Number(row.id);
+  return {
+    id: `ticket-db-${row.id}`,
+    dbId: Number.isFinite(dbId) ? dbId : undefined,
+    stationId: String(row.station_id ?? ''),
+    stationName: row.location_name || 'Unknown',
+    latitude: lat,
+    longitude: lon,
+    serviceType: row.task || 'Other',
+    color: taskToColor(row.task),
+    source: 'database',
+    sortOrder,
+  };
+}
+
+/**
+ * DB tickets first; slot-health tickets only for stations not already in the DB list.
+ * @param {object[]} dbRows
+ * @param {object[]} stations
+ * @returns {Ticket[]}
+ */
+function mergeDbAndStationTickets(dbRows, stations) {
+  const dbTickets = dbRows.map((row, i) => apiTicketToTicket(row, i));
+  const stationTickets = buildTicketsFromStations(stations);
+  const dbStationIds = new Set(dbTickets.map((t) => t.stationId));
+  const merged = [...dbTickets, ...stationTickets.filter((t) => !dbStationIds.has(t.stationId))];
+  merged.forEach((t, i) => {
+    t.sortOrder = i;
+  });
+  return merged;
+}
+
+async function refreshTicketList() {
+  const stations = await fetchStations();
+  allStationsForPicker = stations;
+  populateStationSelect();
+  let rows = [];
+  try {
+    rows = await fetchTicketsList();
+  } catch (e) {
+    console.warn(e);
+  }
+  tickets = mergeDbAndStationTickets(rows, stations);
+  await recalculateRoute();
+}
+
 /**
  * @param {object[]} stations
  * @returns {Ticket[]}
@@ -297,13 +407,22 @@ function populateStationSelect() {
   if (!sel) {
     return;
   }
+  rebuildStationsById();
   sel.innerHTML = '<option value="">Select station</option>';
   for (const s of allStationsForPicker) {
+    if (s == null || s.id == null) {
+      continue;
+    }
+    const id = String(s.id).trim();
+    if (!id) {
+      continue;
+    }
     const opt = document.createElement('option');
-    opt.value = String(s.id ?? '');
-    opt.textContent = s.title || opt.value;
+    opt.value = id;
+    opt.textContent = s.title || id;
     sel.appendChild(opt);
   }
+  updateCreateStationHint();
 }
 
 /**
@@ -437,16 +556,25 @@ function renderTickets() {
     });
 
     const actionsChildren = [];
-    if (ticket.source === 'manual') {
+    if (ticket.source === 'database' && ticket.dbId != null && Number.isFinite(ticket.dbId)) {
       actionsChildren.push(
         el('button', {
           type: 'button',
           className: 'btn-ticket-delete',
           text: 'Delete',
-          onclick: (ev) => {
+          onclick: async (ev) => {
             ev.stopPropagation();
-            tickets = tickets.filter((t) => t.id !== ticket.id);
-            void recalculateRoute();
+            try {
+              const res = await fetch(`${TICKETS_URL}/${ticket.dbId}`, { method: 'DELETE' });
+              const data = await res.json().catch(() => ({}));
+              if (!res.ok || data.success === false) {
+                setStatus(data.error || data.message || `Delete failed (${res.status})`, true);
+                return;
+              }
+              await refreshTicketList();
+            } catch (e) {
+              setStatus(e.message || 'Delete failed', true);
+            }
           },
         }),
       );
@@ -487,6 +615,7 @@ function openCreateTicketModal() {
   if (form) {
     form.reset();
   }
+  updateCreateStationHint();
   modal.classList.add('is-open');
   modal.setAttribute('aria-hidden', 'false');
 }
@@ -514,6 +643,10 @@ function setupCreateTicketUI() {
   if (btn) {
     btn.addEventListener('click', () => openCreateTicketModal());
   }
+  const stationSel = document.getElementById('create-station');
+  if (stationSel) {
+    stationSel.addEventListener('change', updateCreateStationHint);
+  }
   if (cancel) {
     cancel.addEventListener('click', () => closeCreateTicketModal());
   }
@@ -534,7 +667,6 @@ function setupCreateTicketUI() {
 
       const stationId = form.station.value.trim();
       const issue = form.issue.value.trim();
-      const colorRadio = form.querySelector('input[name="create-color"]:checked');
 
       if (!stationId) {
         err.textContent = 'Select a station.';
@@ -544,44 +676,67 @@ function setupCreateTicketUI() {
         err.textContent = 'Select an issue type.';
         return;
       }
-      if (!ISSUE_TYPES.includes(issue)) {
+      if (!TASK_TYPES.includes(issue)) {
         err.textContent = 'Invalid issue type.';
         return;
       }
-      if (!colorRadio || (colorRadio.value !== 'yellow' && colorRadio.value !== 'red')) {
-        err.textContent = 'Select yellow or red.';
-        return;
-      }
 
-      const station = allStationsForPicker.find((s) => String(s.id ?? '') === stationId);
+      const station = stationsById.get(stationId);
       if (!station) {
-        err.textContent = 'Invalid station.';
+        err.textContent = 'Pick a station from the list (station ID must match the API).';
         return;
       }
+      const apiStationId = String(station.id).trim();
+      const locationName = String(station.title || '').trim() || apiStationId;
       const lat = parseCoord(station.latitude);
       const lon = parseCoord(station.longitude);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
         err.textContent = 'Station has no valid coordinates.';
         return;
       }
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        err.textContent = 'Coordinates out of range.';
+        return;
+      }
 
-      manualTicketSeq += 1;
-      const color = colorRadio.value;
-      const ticket = {
-        id: `ticket-manual-${manualTicketSeq}-${Date.now()}`,
-        stationId: String(station.id ?? ''),
-        stationName: station.title || 'Unknown',
+      const descEl = document.getElementById('create-description');
+      const description = descEl && String(descEl.value || '').trim();
+
+      const body = {
+        location_name: locationName,
+        station_id: apiStationId,
         latitude: lat,
         longitude: lon,
-        serviceType: issue,
-        issueType: issue,
-        color,
-        source: 'manual',
-        sortOrder: tickets.length,
+        task: issue,
       };
-      tickets.push(ticket);
-      closeCreateTicketModal();
-      void recalculateRoute();
+      if (description) {
+        body.description = description;
+      }
+
+      (async () => {
+        try {
+          const res = await fetch(TICKETS_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.success === false) {
+            let msg =
+              (data && (data.error || data.message)) || `Create failed (${res.status})`;
+            if (res.status === 404) {
+              msg =
+                'Tickets API returned 404 — the route may not be deployed yet. Set CUUB_TICKETS_API_URL in the server .env to the full tickets URL (e.g. https://host/path/tickets), then restart.';
+            }
+            err.textContent = msg;
+            return;
+          }
+          closeCreateTicketModal();
+          await refreshTicketList();
+        } catch (e) {
+          err.textContent = e.message || 'Network error';
+        }
+      })();
     });
   }
 }
@@ -592,7 +747,15 @@ async function init() {
     const stations = await fetchStations();
     allStationsForPicker = stations;
     populateStationSelect();
-    tickets = buildTicketsFromStations(stations);
+
+    let rows = [];
+    try {
+      rows = await fetchTicketsList();
+    } catch (ticketErr) {
+      console.warn('Tickets list failed (stations still loaded):', ticketErr);
+    }
+
+    tickets = mergeDbAndStationTickets(rows, stations);
     await recalculateRoute();
   } catch (e) {
     console.error(e);

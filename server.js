@@ -33,6 +33,51 @@ app.get('/api/stations', async (req, res) => {
 });
 
 /**
+ * Full tickets resource URL on api.cuub.tech (no trailing slash).
+ * Override if your deployment uses another path (e.g. when GET /tickets returns 404).
+ */
+const CUUB_TICKETS_API_URL = (process.env.CUUB_TICKETS_API_URL || 'https://api.cuub.tech/tickets').replace(
+  /\/$/,
+  '',
+);
+
+/** Proxied tickets CRUD — avoids browser CORS to api.cuub.tech. */
+app.get('/api/tickets', async (req, res) => {
+  try {
+    const r = await fetch(CUUB_TICKETS_API_URL);
+    const data = await r.json().catch(() => ({}));
+    res.status(r.status).json(data);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || String(err) });
+  }
+});
+
+app.post('/api/tickets', async (req, res) => {
+  try {
+    const r = await fetch(CUUB_TICKETS_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body || {}),
+    });
+    const data = await r.json().catch(() => ({}));
+    res.status(r.status).json(data);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || String(err) });
+  }
+});
+
+app.delete('/api/tickets/:id', async (req, res) => {
+  try {
+    const id = encodeURIComponent(req.params.id);
+    const r = await fetch(`${CUUB_TICKETS_API_URL}/${id}`, { method: 'DELETE' });
+    const data = await r.json().catch(() => ({}));
+    res.status(r.status).json(data);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || String(err) });
+  }
+});
+
+/**
  * Returns Mapbox nearest-neighbor route order for maintenance tickets (requires MAPBOX_ACCESS_TOKEN).
  */
 app.post('/api/maintenance-route-order', async (req, res) => {
