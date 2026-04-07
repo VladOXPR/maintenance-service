@@ -507,4 +507,3 @@ if (require.main === module) {
     }
   })();
 }
-

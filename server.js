@@ -41,6 +41,39 @@ const CUUB_TICKETS_API_URL = (process.env.CUUB_TICKETS_API_URL || 'https://api.c
   '',
 );
 
+/**
+ * Coerce `task` for upstream: some APIs expect one enum string; we send an array from the UI.
+ * Single-element array → string unless CUUB_TICKETS_TASK_ALWAYS_ARRAY=1.
+ * @param {Record<string, unknown>|null|undefined} body
+ */
+function normalizeTicketTaskForUpstream(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return body;
+  }
+  const out = { ...body };
+  if (out.task == null) {
+    return out;
+  }
+  const alwaysArray =
+    process.env.CUUB_TICKETS_TASK_ALWAYS_ARRAY === '1' ||
+    process.env.CUUB_TICKETS_TASK_ALWAYS_ARRAY === 'true';
+  if (Array.isArray(out.task)) {
+    const arr = out.task.map((t) => String(t).trim()).filter(Boolean);
+    if (arr.length === 0) {
+      delete out.task;
+      return out;
+    }
+    if (!alwaysArray && arr.length === 1) {
+      out.task = arr[0];
+    } else {
+      out.task = arr;
+    }
+    return out;
+  }
+  out.task = String(out.task).trim();
+  return out;
+}
+
 /** Proxied tickets CRUD — avoids browser CORS to api.cuub.tech. */
 app.get('/api/tickets', async (req, res) => {
   try {
@@ -54,10 +87,11 @@ app.get('/api/tickets', async (req, res) => {
 
 app.post('/api/tickets', async (req, res) => {
   try {
+    const payload = normalizeTicketTaskForUpstream(req.body || {});
     const r = await fetch(CUUB_TICKETS_API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req.body || {}),
+      body: JSON.stringify(payload),
     });
     const data = await r.json().catch(() => ({}));
     res.status(r.status).json(data);

@@ -231,16 +231,39 @@
       flex: 1;
     }
 
+    .ticket-block-text {
+      min-width: 0;
+    }
+
+    .ticket-title-row {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.35rem 0.65rem;
+      margin-bottom: 0.35rem;
+    }
+
     .ticket-station-name {
       font-weight: 600;
       font-size: 0.95rem;
       color: var(--text-primary);
-      margin-bottom: 0.35rem;
+      margin-bottom: 0;
     }
 
     .ticket-service {
       font-size: 0.85rem;
       color: var(--text-secondary);
+    }
+
+    .ticket-slots {
+      flex-shrink: 0;
+      font-size: 1.05rem;
+      font-weight: 600;
+      line-height: 1.2;
+      color: var(--text-secondary);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.02em;
     }
 
     .ticket-grip {
@@ -333,6 +356,15 @@
     .form-row select:focus {
       outline: none;
       border-color: var(--accent-primary);
+    }
+
+    .form-row select.form-select-multi {
+      min-height: 11rem;
+      padding: 0.35rem 0.5rem;
+    }
+
+    .form-row select.form-select-multi option {
+      padding: 0.25rem 0.35rem;
     }
 
     .form-row textarea {
@@ -464,19 +496,9 @@
                 <p id="create-station-id-hint" class="form-station-hint">Choose a station — its ID is sent with the ticket.</p>
               </div>
               <div class="form-row">
-                <label for="create-issue">Issue type</label>
-                <select id="create-issue" name="issue" required>
-                  <option value="">Select issue</option>
-                  <option value="High Batteries">High Batteries</option>
-                  <option value="Low Batteries">Low Batteries</option>
-                  <option value="No Batteries">No Batteries</option>
-                  <option value="Add Stack">Add Stack</option>
-                  <option value="Broken Battery">Broken Battery</option>
-                  <option value="High Failure Rates">High Failure Rates</option>
-                  <option value="Hardware Malfunction">Hardware Malfunction</option>
-                  <option value="Unusually Offline">Unusually Offline</option>
-                  <option value="Other">Other</option>
-                </select>
+                <label for="create-task">Tasks</label>
+                <select id="create-task" name="task" multiple size="9" class="form-select-multi" aria-label="Tasks (select one or more)"></select>
+                <p class="form-station-hint">Hold Ctrl (Windows) or ⌘ (Mac) to select multiple. Each choice is added to the task array on create.</p>
               </div>
               <div class="form-row">
                 <label for="create-description">Description (optional)</label>

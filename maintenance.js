@@ -36,14 +36,17 @@ const HOME_BASE = Object.freeze({
  *   latitude: number,
  *   longitude: number,
  *   serviceType: string,
+ *   tasks?: string[],
  *   color: 'red' | 'yellow',
  *   source: 'station-status' | 'database',
  *   sortOrder: number,
- *   dbId?: number
+ *   dbId?: number,
+ *   filledSlots?: number,
+ *   totalSlots?: number
  * }} Ticket
  */
 
-/** Must match Postgres enum on api.cuub.tech (Create ticket body). */
+/** Must match Postgres `ticket_task` / `ticket_task[]` on api.cuub.tech. */
 const TASK_TYPES = [
   'High Batteries',
   'Low Batteries',
@@ -55,6 +58,196 @@ const TASK_TYPES = [
   'Unusually Offline',
   'Other',
 ];
+
+const RED_TASKS = new Set([
+  'Low Batteries',
+  'No Batteries',
+  'Broken Battery',
+  'Unusually Offline',
+]);
+
+/**
+ * Remove one layer of surrounding single/double quotes (repeat while nested).
+ * @param {string} s
+ */
+function stripOuterQuotes(s) {
+  let t = s.trim();
+  let prev = '';
+  while (t !== prev) {
+    prev = t;
+    if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
+      t = t.slice(1, -1).trim();
+      continue;
+    }
+    if (t.length >= 2 && t.startsWith("'") && t.endsWith("'")) {
+      t = t.slice(1, -1).trim();
+    }
+  }
+  return t;
+}
+
+/**
+ * Strip Postgres/JSON cruft from one task label: `{}`, stray `"`, duplicated braces.
+ * @param {string} raw
+ */
+function cleanTaskLabel(raw) {
+  let t = stripOuterQuotes(String(raw ?? '').trim());
+  t = t.replace(/^\{+/, '').replace(/\}+$/g, '');
+  t = stripOuterQuotes(t);
+  t = t.replace(/^"+|"+$/g, '');
+  t = t.replace(/\{|\}/g, '');
+  return t.trim();
+}
+
+/**
+ * @param {string[]} parts
+ * @returns {string[]}
+ */
+function normalizeTaskStringList(parts) {
+  return parts.map((p) => cleanTaskLabel(p)).filter(Boolean);
+}
+
+/**
+ * Split Postgres array literal body (inside `{`…`}`) into elements; supports quoted tokens.
+ * @param {string} inner
+ * @returns {string[]}
+ */
+function splitPostgresArrayElements(inner) {
+  const parts = [];
+  let i = 0;
+  const str = inner.trim();
+  while (i < str.length) {
+    while (i < str.length && /\s/.test(str[i])) {
+      i += 1;
+    }
+    if (i >= str.length) {
+      break;
+    }
+    if (str[i] === '"') {
+      i += 1;
+      let buf = '';
+      while (i < str.length) {
+        if (str[i] === '\\' && i + 1 < str.length) {
+          buf += str[i + 1];
+          i += 2;
+          continue;
+        }
+        if (str[i] === '"') {
+          i += 1;
+          break;
+        }
+        buf += str[i];
+        i += 1;
+      }
+      parts.push(buf.trim());
+      if (str[i] === ',') {
+        i += 1;
+      }
+      continue;
+    }
+    const start = i;
+    while (i < str.length && str[i] !== ',') {
+      i += 1;
+    }
+    const chunk = str.slice(start, i).trim();
+    if (chunk) {
+      parts.push(chunk);
+    }
+    if (str[i] === ',') {
+      i += 1;
+    }
+  }
+  return parts.filter(Boolean);
+}
+
+/**
+ * Normalize API `task` (JSON array, legacy string, or Postgres `{…}` text) to string[].
+ * @param {unknown} taskField
+ * @returns {string[]}
+ */
+function parseTaskFieldToStrings(taskField) {
+  if (taskField == null) {
+    return [];
+  }
+  if (Array.isArray(taskField)) {
+    return normalizeTaskStringList(taskField.map((t) => String(t)));
+  }
+  let s = stripOuterQuotes(String(taskField).trim());
+  if (!s) {
+    return [];
+  }
+  if (s.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed)) {
+        return normalizeTaskStringList(parsed.map((t) => String(t)));
+      }
+    } catch (_) {
+      /* fall through */
+    }
+  }
+  if (s.startsWith('{') && s.endsWith('}')) {
+    return normalizeTaskStringList(splitPostgresArrayElements(s.slice(1, -1)));
+  }
+  if (s.startsWith('{')) {
+    return normalizeTaskStringList([s.slice(1)]);
+  }
+  return normalizeTaskStringList([s]);
+}
+
+/**
+ * Split comma-joined labels (common in raw Postgres/API text) into separate tasks.
+ * @param {string[]} parts
+ * @returns {string[]}
+ */
+function canonicalTaskLabels(parts) {
+  if (!parts || !parts.length) {
+    return [];
+  }
+  const out = [];
+  for (const raw of parts) {
+    const c = cleanTaskLabel(String(raw));
+    if (!c) {
+      continue;
+    }
+    if (c.includes(',')) {
+      for (const piece of c.split(',')) {
+        const x = cleanTaskLabel(piece);
+        if (x) {
+          out.push(x);
+        }
+      }
+    } else {
+      out.push(c);
+    }
+  }
+  return out;
+}
+
+/**
+ * @param {string[]} tasks
+ * @returns {string}
+ */
+function formatTasksDisplay(tasks) {
+  return canonicalTaskLabels(tasks).join(' · ');
+}
+
+/**
+ * @param {string[]} tasks
+ * @returns {'red'|'yellow'}
+ */
+function tasksToColor(tasks) {
+  const flat = canonicalTaskLabels(tasks);
+  if (!flat.length) {
+    return 'yellow';
+  }
+  for (const t of flat) {
+    if (RED_TASKS.has(String(t))) {
+      return 'red';
+    }
+  }
+  return 'yellow';
+}
 
 /** All stations for Create Ticket dropdown (set in init). */
 let allStationsForPicker = [];
@@ -183,6 +376,55 @@ function parseCoord(v) {
   return Number.isFinite(n) ? n : NaN;
 }
 
+/** @param {object} station */
+function parseFilledSlots(station) {
+  const f = station.filled_slots;
+  if (f === null || f === undefined || f === 'N/A') {
+    return null;
+  }
+  const n = typeof f === 'string' ? parseInt(f, 10) : Number(f);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * @param {Ticket} ticket
+ * @param {Map<string, object>} stationMap
+ */
+function enrichTicketSlotCounts(ticket, stationMap) {
+  if (Number.isFinite(ticket.filledSlots) && Number.isFinite(ticket.totalSlots)) {
+    return;
+  }
+  const st = stationMap.get(String(ticket.stationId).trim());
+  if (!st) {
+    return;
+  }
+  const filled = parseFilledSlots(st);
+  if (filled === null) {
+    return;
+  }
+  ticket.filledSlots = filled;
+  ticket.totalSlots = getTotalSlotsForStation(st);
+}
+
+/**
+ * @param {Ticket} ticket
+ * @returns {string|null}
+ */
+function formatTicketSlotsLine(ticket) {
+  if (Number.isFinite(ticket.filledSlots) && Number.isFinite(ticket.totalSlots)) {
+    return `${ticket.filledSlots} / ${ticket.totalSlots}`;
+  }
+  const st = stationsById.get(String(ticket.stationId).trim());
+  if (!st) {
+    return null;
+  }
+  const filled = parseFilledSlots(st);
+  if (filled === null) {
+    return null;
+  }
+  return `${filled} / ${getTotalSlotsForStation(st)}`;
+}
+
 /**
  * @param {object} station raw API row
  * @param {number} sortOrder
@@ -194,7 +436,10 @@ function stationToTicket(station, sortOrder, color) {
   const sid = String(station.id ?? '');
   const name = station.title || 'Unknown';
   const serviceType = 'Battery Redistribution';
-  return {
+  const filled = parseFilledSlots(station);
+  const totalSlots = filled != null ? getTotalSlotsForStation(station) : undefined;
+  /** @type {Ticket} */
+  const t = {
     id: `ticket-${sid}`,
     stationId: sid,
     stationName: name,
@@ -205,6 +450,11 @@ function stationToTicket(station, sortOrder, color) {
     source: 'station-status',
     sortOrder,
   };
+  if (filled != null && totalSlots != null) {
+    t.filledSlots = filled;
+    t.totalSlots = totalSlots;
+  }
+  return t;
 }
 
 async function fetchStations() {
@@ -231,11 +481,6 @@ async function fetchTicketsList() {
   return data.data;
 }
 
-function taskToColor(task) {
-  const red = new Set(['Low Batteries', 'No Batteries', 'Broken Battery', 'Unusually Offline']);
-  return red.has(String(task || '')) ? 'red' : 'yellow';
-}
-
 /**
  * @param {object} row API ticket row
  * @param {number} sortOrder
@@ -245,6 +490,8 @@ function apiTicketToTicket(row, sortOrder) {
   const lat = parseCoord(row.latitude);
   const lon = parseCoord(row.longitude);
   const dbId = Number(row.id);
+  const tasks = canonicalTaskLabels(parseTaskFieldToStrings(row.task));
+  const label = formatTasksDisplay(tasks) || 'Other';
   return {
     id: `ticket-db-${row.id}`,
     dbId: Number.isFinite(dbId) ? dbId : undefined,
@@ -252,8 +499,9 @@ function apiTicketToTicket(row, sortOrder) {
     stationName: row.location_name || 'Unknown',
     latitude: lat,
     longitude: lon,
-    serviceType: row.task || 'Other',
-    color: taskToColor(row.task),
+    tasks,
+    serviceType: label,
+    color: tasksToColor(tasks),
     source: 'database',
     sortOrder,
   };
@@ -270,6 +518,8 @@ function mergeDbAndStationTickets(dbRows, stations) {
   const stationTickets = buildTicketsFromStations(stations);
   const dbStationIds = new Set(dbTickets.map((t) => t.stationId));
   const merged = [...dbTickets, ...stationTickets.filter((t) => !dbStationIds.has(t.stationId))];
+  const stationMap = new Map(stations.map((s) => [String(s.id ?? '').trim(), s]));
+  merged.forEach((t) => enrichTicketSlotCounts(t, stationMap));
   merged.forEach((t, i) => {
     t.sortOrder = i;
   });
@@ -423,6 +673,36 @@ function populateStationSelect() {
     sel.appendChild(opt);
   }
   updateCreateStationHint();
+}
+
+function populateTaskMultiSelect() {
+  const sel = document.getElementById('create-task');
+  if (!sel) {
+    return;
+  }
+  sel.innerHTML = '';
+  for (const t of TASK_TYPES) {
+    const opt = document.createElement('option');
+    opt.value = t;
+    opt.textContent = t;
+    sel.appendChild(opt);
+  }
+}
+
+/**
+ * @param {Ticket} ticket
+ * @returns {string}
+ */
+function ticketSubtitleText(ticket) {
+  if (ticket.source === 'database') {
+    const list =
+      ticket.tasks && ticket.tasks.length > 0 ? ticket.tasks : parseTaskFieldToStrings(ticket.serviceType);
+    if (list.length > 0) {
+      return formatTasksDisplay(list);
+    }
+    return ticket.serviceType || 'Other';
+  }
+  return ticket.serviceType || '';
 }
 
 /**
@@ -581,11 +861,24 @@ function renderTickets() {
     }
     actionsChildren.push(el('span', { className: 'ticket-grip', text: '⋮⋮' }));
 
+    const slotsLine = formatTicketSlotsLine(ticket);
+    const titleRowChildren = [
+      el('div', { className: 'ticket-station-name', text: ticket.stationName }),
+    ];
+    if (slotsLine) {
+      titleRowChildren.push(el('div', { className: 'ticket-slots', text: slotsLine }));
+    }
+    const textCol = el(
+      'div',
+      { className: 'ticket-block-text' },
+      [
+        el('div', { className: 'ticket-title-row' }, titleRowChildren),
+        el('div', { className: 'ticket-service', text: ticketSubtitleText(ticket) }),
+      ],
+    );
+
     const inner = el('div', { className: 'ticket-block-inner' }, [
-      el('div', { className: 'ticket-block-main' }, [
-        el('div', { className: 'ticket-station-name', text: ticket.stationName }),
-        el('div', { className: 'ticket-service', text: ticket.serviceType }),
-      ]),
+      el('div', { className: 'ticket-block-main' }, [textCol]),
       el('div', { className: 'ticket-actions' }, actionsChildren),
     ]);
     row.appendChild(inner);
@@ -666,19 +959,26 @@ function setupCreateTicketUI() {
       err.textContent = '';
 
       const stationId = form.station.value.trim();
-      const issue = form.issue.value.trim();
+      const taskSel = document.getElementById('create-task');
+      const selectedTasks = taskSel
+        ? Array.from(taskSel.selectedOptions)
+            .map((o) => o.value.trim())
+            .filter(Boolean)
+        : [];
 
       if (!stationId) {
         err.textContent = 'Select a station.';
         return;
       }
-      if (!issue) {
-        err.textContent = 'Select an issue type.';
+      if (!selectedTasks.length) {
+        err.textContent = 'Select at least one task (hold Ctrl/Cmd to select multiple).';
         return;
       }
-      if (!TASK_TYPES.includes(issue)) {
-        err.textContent = 'Invalid issue type.';
-        return;
+      for (const t of selectedTasks) {
+        if (!TASK_TYPES.includes(t)) {
+          err.textContent = 'Invalid task selection.';
+          return;
+        }
       }
 
       const station = stationsById.get(stationId);
@@ -707,7 +1007,7 @@ function setupCreateTicketUI() {
         station_id: apiStationId,
         latitude: lat,
         longitude: lon,
-        task: issue,
+        task: selectedTasks,
       };
       if (description) {
         body.description = description;
@@ -767,8 +1067,13 @@ async function init() {
 
 setupCreateTicketUI();
 
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
-} else {
+function boot() {
+  populateTaskMultiSelect();
   init();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', boot);
+} else {
+  boot();
 }
