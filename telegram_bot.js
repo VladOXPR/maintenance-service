@@ -132,21 +132,44 @@ function getFilledSlotHealthLevel(totalSlots, filledSlotsNum) {
 }
 
 /**
+ * Parsed fill counts for capacity rules (same idea as maintenance.js stationNeedsTicket input).
+ * @returns {{ filled: number, total: number } | null}
+ */
+function getStationFillMetrics(station) {
+  const filledSlots = station.filled_slots;
+  if (filledSlots === null || filledSlots === undefined || filledSlots === 'N/A') {
+    return null;
+  }
+  const filledNum = typeof filledSlots === 'string' ? parseInt(filledSlots, 10) : Number(filledSlots);
+  if (isNaN(filledNum)) {
+    return null;
+  }
+  const total = getTotalSlotsForStation(station);
+  if (!Number.isFinite(total) || total <= 0) {
+    return null;
+  }
+  return { filled: filledNum, total };
+}
+
+/** Red or yellow under getFilledSlotHealthLevel (empty/full = red; ≤33% filled = yellow). */
+function stationNeedsCapacityAlert(station) {
+  const m = getStationFillMetrics(station);
+  if (!m) {
+    return false;
+  }
+  const level = getFilledSlotHealthLevel(m.total, m.filled);
+  return level === 'red' || level === 'yellow';
+}
+
+/**
  * Sort: red first, then yellow, then green (same thresholds as getFilledSlotHealthLevel).
  */
 function getStationPriority(station) {
-  const filledSlots = station.filled_slots;
-  if (filledSlots === null || filledSlots === undefined || filledSlots === 'N/A') {
+  const m = getStationFillMetrics(station);
+  if (!m) {
     return 4;
   }
-  
-  const filledSlotsNum = typeof filledSlots === 'string' ? parseInt(filledSlots, 10) : filledSlots;
-  if (isNaN(filledSlotsNum)) {
-    return 4;
-  }
-  
-  const totalSlots = getTotalSlotsForStation(station);
-  const level = getFilledSlotHealthLevel(totalSlots, filledSlotsNum);
+  const level = getFilledSlotHealthLevel(m.total, m.filled);
   if (level === 'red') {
     return 1;
   }
@@ -159,57 +182,44 @@ function getStationPriority(station) {
   return 4;
 }
 
+/**
+ * Lists stations that need attention: same percent-capacity rules as the maintenance UI
+ * (red = 0% or 100% full, yellow = up to 33% full, green omitted).
+ */
 function formatStationStatus(stations) {
   if (!stations || stations.length === 0) {
     return 'No stations found.';
   }
-  
-  const redYellowStations = stations.filter(station => {
-    const filledSlots = station.filled_slots;
-    if (filledSlots === null || filledSlots === undefined || filledSlots === 'N/A') {
-      return false;
-    }
-    
-    const filledSlotsNum = typeof filledSlots === 'string' ? parseInt(filledSlots, 10) : filledSlots;
-    if (isNaN(filledSlotsNum)) {
-      return false;
-    }
-    const totalSlots = getTotalSlotsForStation(station);
-    const level = getFilledSlotHealthLevel(totalSlots, filledSlotsNum);
-    return level === 'red' || level === 'yellow';
-  });
-  
+
+  const redYellowStations = stations.filter(stationNeedsCapacityAlert);
+
   // Sort stations: Red first, then Yellow (when we have any)
   const sortedStations = redYellowStations.length === 0
     ? []
     : [...redYellowStations].sort((a, b) => getStationPriority(a) - getStationPriority(b));
-  
+
   let message = '';
-  
+
   if (sortedStations.length === 0) {
     message = 'Network is healthy!';
   }
-  
+
   sortedStations.forEach((station) => {
-    const title = station.title || 'Unknown';
-    const filledSlots = station.filled_slots !== null && station.filled_slots !== undefined 
-      ? station.filled_slots 
-      : 0;
-    const openSlots = station.open_slots !== null && station.open_slots !== undefined 
-      ? station.open_slots 
-      : 0;
-    
-    const totalSlots = getTotalSlotsForStation(station);
-    const filledSlotsNum = typeof filledSlots === 'string' ? parseInt(filledSlots, 10) : filledSlots;
+    const m = getStationFillMetrics(station);
+    if (!m) {
+      return;
+    }
+    const { filled: filledSlotsNum, total: totalSlots } = m;
     const health = getFilledSlotHealthLevel(totalSlots, filledSlotsNum);
+    const title = station.title || 'Unknown';
 
     let colorSquare = '';
-    if (health === 'green') {
-      colorSquare = '🟢';
-    } else if (health === 'yellow') {
+    if (health === 'yellow') {
       colorSquare = '🟨';
     } else if (health === 'red') {
       colorSquare = '🟥';
+    } else {
+      colorSquare = '🟢';
     }
 
     message += `${title}\n`;
