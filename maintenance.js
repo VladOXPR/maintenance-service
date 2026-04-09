@@ -9,6 +9,31 @@ const STATIONS_URL = '/api/stations';
 /** Proxied by server.js → https://api.cuub.tech/tickets */
 const TICKETS_URL = '/api/tickets';
 
+/**
+ * Prefer upstream error text; only then use a 404 hint (wrong proxy route vs wrong base URL).
+ * @param {Response} res
+ * @param {object} data
+ * @param {'update' | 'create'} action
+ */
+function ticketsApiFailureMessage(res, data, action) {
+  const raw = data && (data.error ?? data.message);
+  if (raw != null && String(raw).trim() !== '') {
+    return String(raw);
+  }
+  if (res.status === 404) {
+    const patchHint =
+      action === 'update'
+        ? 'Restart the maintenance Node server after updating this repo so the proxy registers PATCH /api/tickets/:id. '
+        : '';
+    return (
+      'Tickets API returned 404. ' +
+      patchHint +
+      'If the queue still loads, check CUUB_TICKETS_API_URL in server .env (full tickets base URL, no trailing slash, e.g. https://api.cuub.tech/tickets) and restart.'
+    );
+  }
+  return `${action === 'update' ? 'Update' : 'Create'} failed (${res.status})`;
+}
+
 /** Same rule as `stationFilters.js` — exclude lab / bogus rows. */
 function omitTestStationRows(stations) {
   if (!Array.isArray(stations)) {
@@ -18,15 +43,62 @@ function omitTestStationRows(stations) {
 }
 
 /**
- * Depot / route start (always index 0 in `routeOptimization.js`).
+ * Default depot / route start (always index 0 in `routeOptimization.js`).
  * Civic Opera House area — 20 North Wacker Drive, Chicago, IL (~41.8818, -87.6374).
+ * Override in the UI; persisted under {@link ROUTE_HOME_STORAGE_KEY}.
  */
-const HOME_BASE = Object.freeze({
+const DEFAULT_ROUTE_HOME = Object.freeze({
   id: 'home-civic-opera',
   title: 'Civic Opera House — Home',
   latitude: 41.8818,
   longitude: -87.6374,
 });
+
+/** @type {string} */
+const ROUTE_HOME_STORAGE_KEY = 'maintenance.routeHome.v1';
+
+/** Fixed id for user-set start so it never collides with ticket ids. */
+const CUSTOM_ROUTE_HOME_ID = 'route-start';
+
+/**
+ * @returns {{ id: string, title: string, latitude: number, longitude: number }}
+ */
+function getDefaultRouteHome() {
+  return {
+    id: DEFAULT_ROUTE_HOME.id,
+    title: DEFAULT_ROUTE_HOME.title,
+    latitude: DEFAULT_ROUTE_HOME.latitude,
+    longitude: DEFAULT_ROUTE_HOME.longitude,
+  };
+}
+
+/**
+ * Effective route start for Mapbox optimization (default or user-saved).
+ * @returns {{ id: string, title: string, latitude: number, longitude: number }}
+ */
+function getRouteHome() {
+  try {
+    const raw = localStorage.getItem(ROUTE_HOME_STORAGE_KEY);
+    if (!raw) {
+      return getDefaultRouteHome();
+    }
+    const o = JSON.parse(raw);
+    const lat = parseCoord(o.latitude);
+    const lon = parseCoord(o.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return getDefaultRouteHome();
+    }
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      return getDefaultRouteHome();
+    }
+    const title = String(o.title || '').trim() || 'Starting Point';
+    const id =
+      typeof o.id === 'string' && o.id.trim() ? o.id.trim() : CUSTOM_ROUTE_HOME_ID;
+    return { id, title, latitude: lat, longitude: lon };
+  } catch {
+    return getDefaultRouteHome();
+  }
+}
 
 /**
  * @typedef {{
@@ -37,6 +109,7 @@ const HOME_BASE = Object.freeze({
  *   longitude: number,
  *   serviceType: string,
  *   tasks?: string[],
+ *   description?: string,
  *   color: 'red' | 'yellow',
  *   source: 'station-status' | 'database',
  *   sortOrder: number,
@@ -491,6 +564,7 @@ function apiTicketToTicket(row, sortOrder) {
     latitude: lat,
     longitude: lon,
     tasks,
+    description: row.description != null ? String(row.description) : '',
     serviceType: label,
     color: tasksToColor(tasks),
     source: 'database',
@@ -549,11 +623,12 @@ function buildTicketsFromStations(stations) {
 }
 
 /**
- * Yellow/red tickets → locations for `routeOptimization.js`, with home first (fixed start).
+ * Yellow/red tickets → locations for `routeOptimization.js`, with route start first (index 0).
  * @param {Ticket[]} tickets
  * @returns {{ id: string, title: string, latitude: number, longitude: number }[]}
  */
 function buildLocationsForRouteOptimization(tickets) {
+  const home = getRouteHome();
   const stationLocs = tickets
     .filter((t) => Number.isFinite(t.latitude) && Number.isFinite(t.longitude))
     .map((t) => ({
@@ -564,10 +639,10 @@ function buildLocationsForRouteOptimization(tickets) {
     }));
   return [
     {
-      id: HOME_BASE.id,
-      title: HOME_BASE.title,
-      latitude: HOME_BASE.latitude,
-      longitude: HOME_BASE.longitude,
+      id: home.id,
+      title: home.title,
+      latitude: home.latitude,
+      longitude: home.longitude,
     },
     ...stationLocs,
   ];
@@ -575,7 +650,7 @@ function buildLocationsForRouteOptimization(tickets) {
 
 /**
  * Mapbox matrix + nearest-neighbor via server (`routeOptimization.optimizeDrivingRoute`).
- * Route always starts at {@link HOME_BASE}; response order includes home — strip it when applying to tickets.
+ * Route always starts at the configured home (see getRouteHome); response order includes home — strip it when applying to tickets.
  * @param {Ticket[]} tickets
  * @returns {Promise<{ orderedStationIds: string[] | null, summary: string | null }>}
  */
@@ -707,9 +782,10 @@ async function recalculateRoute() {
   }
   const { orderedStationIds } = await fetchRouteOrderFromServer(tickets);
   if (orderedStationIds && orderedStationIds.length > 0) {
-    tickets = applyStationOrder(tickets, orderedStationIds, HOME_BASE.id);
+    const home = getRouteHome();
+    tickets = applyStationOrder(tickets, orderedStationIds, home.id);
     setStatus(
-      'Queue order: shortest driving loop from Civic Opera House (20 N Wacker), returning home. Drag rows to reorder.',
+      `Queue order: shortest driving loop from ${home.title}, returning to start. Drag rows to reorder.`,
     );
   } else {
     setStatus(
@@ -785,7 +861,10 @@ function renderTickets() {
     });
 
     row.addEventListener('dragstart', (e) => {
-      if (e.target.closest && e.target.closest('.btn-ticket-delete')) {
+      if (
+        e.target.closest &&
+        (e.target.closest('.btn-ticket-delete') || e.target.closest('.btn-ticket-edit'))
+      ) {
         e.preventDefault();
         return;
       }
@@ -831,8 +910,19 @@ function renderTickets() {
       actionsChildren.push(
         el('button', {
           type: 'button',
+          className: 'btn-ticket-edit',
+          text: 'Edit',
+          onclick: (ev) => {
+            ev.stopPropagation();
+            openEditTicketModal(ticket);
+          },
+        }),
+      );
+      actionsChildren.push(
+        el('button', {
+          type: 'button',
           className: 'btn-ticket-delete',
-          text: 'Delete',
+          text: 'Done',
           onclick: async (ev) => {
             ev.stopPropagation();
             try {
@@ -915,6 +1005,188 @@ function closeCreateTicketModal() {
   }
   modal.classList.remove('is-open');
   modal.setAttribute('aria-hidden', 'true');
+}
+
+/**
+ * @param {Ticket} ticket
+ */
+function fillEditTaskSelectForTicket(ticket) {
+  const sel = document.getElementById('edit-task');
+  if (!sel) {
+    return;
+  }
+  sel.innerHTML = '';
+  const extras = new Set();
+  for (const t of ticket.tasks || []) {
+    if (!TASK_TYPES.includes(t)) {
+      extras.add(t);
+    }
+  }
+  for (const t of TASK_TYPES) {
+    const opt = document.createElement('option');
+    opt.value = t;
+    opt.textContent = t;
+    sel.appendChild(opt);
+  }
+  for (const t of extras) {
+    const opt = document.createElement('option');
+    opt.value = t;
+    opt.textContent = t;
+    sel.appendChild(opt);
+  }
+  const selected = new Set(ticket.tasks || []);
+  Array.from(sel.options).forEach((opt) => {
+    opt.selected = selected.has(opt.value);
+  });
+}
+
+/**
+ * @param {Ticket} ticket
+ */
+function openEditTicketModal(ticket) {
+  if (ticket.source !== 'database' || ticket.dbId == null || !Number.isFinite(ticket.dbId)) {
+    return;
+  }
+  const modal = document.getElementById('modal-edit');
+  const err = document.getElementById('modal-edit-error');
+  const idEl = document.getElementById('edit-db-id');
+  const nameEl = document.getElementById('edit-location-name');
+  const descEl = document.getElementById('edit-description');
+  const latEl = document.getElementById('edit-latitude');
+  const lonEl = document.getElementById('edit-longitude');
+  if (!modal || !idEl || !nameEl || !descEl || !latEl || !lonEl) {
+    return;
+  }
+  if (err) {
+    err.textContent = '';
+  }
+  idEl.value = String(ticket.dbId);
+  nameEl.value = ticket.stationName || '';
+  descEl.value = ticket.description != null ? String(ticket.description) : '';
+  fillEditTaskSelectForTicket(ticket);
+  if (Number.isFinite(ticket.latitude) && Number.isFinite(ticket.longitude)) {
+    latEl.value = String(ticket.latitude);
+    lonEl.value = String(ticket.longitude);
+  } else {
+    latEl.value = '';
+    lonEl.value = '';
+  }
+  modal.classList.add('is-open');
+  modal.setAttribute('aria-hidden', 'false');
+}
+
+function closeEditTicketModal() {
+  const modal = document.getElementById('modal-edit');
+  const err = document.getElementById('modal-edit-error');
+  if (!modal) {
+    return;
+  }
+  if (err) {
+    err.textContent = '';
+  }
+  modal.classList.remove('is-open');
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+function setupEditTicketUI() {
+  const modal = document.getElementById('modal-edit');
+  const form = document.getElementById('form-edit-ticket');
+  const cancel = document.getElementById('modal-edit-cancel');
+  const err = document.getElementById('modal-edit-error');
+
+  if (cancel) {
+    cancel.addEventListener('click', () => closeEditTicketModal());
+  }
+  if (modal) {
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        closeEditTicketModal();
+      }
+    });
+  }
+  if (form && err) {
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      err.textContent = '';
+
+      const idEl = document.getElementById('edit-db-id');
+      const dbId = idEl ? Number(String(idEl.value || '').trim()) : NaN;
+      if (!Number.isFinite(dbId)) {
+        err.textContent = 'Invalid ticket.';
+        return;
+      }
+
+      const nameEl = document.getElementById('edit-location-name');
+      const location_name = nameEl ? String(nameEl.value || '').trim() : '';
+      if (!location_name) {
+        err.textContent = 'Enter a location name.';
+        return;
+      }
+
+      const taskSel = document.getElementById('edit-task');
+      const selectedTasks = taskSel
+        ? Array.from(taskSel.selectedOptions)
+            .map((o) => o.value.trim())
+            .filter(Boolean)
+        : [];
+      if (!selectedTasks.length) {
+        err.textContent = 'Select at least one task (hold Ctrl/Cmd to select multiple).';
+        return;
+      }
+
+      const descEl = document.getElementById('edit-description');
+      const description = descEl ? String(descEl.value || '').trim() : '';
+
+      const latEl = document.getElementById('edit-latitude');
+      const lonEl = document.getElementById('edit-longitude');
+      const latStr = latEl ? String(latEl.value || '').trim() : '';
+      const lonStr = lonEl ? String(lonEl.value || '').trim() : '';
+
+      /** @type {Record<string, unknown>} */
+      const body = {
+        location_name,
+        task: selectedTasks,
+        description,
+      };
+
+      if (!latStr && !lonStr) {
+        /* keep existing coordinates on server */
+      } else {
+        const lat = parseCoord(latStr);
+        const lon = parseCoord(lonStr);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+          err.textContent =
+            'Enter both latitude and longitude, or clear both to keep existing coordinates.';
+          return;
+        }
+        if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+          err.textContent = 'Coordinates out of range.';
+          return;
+        }
+        body.latitude = lat;
+        body.longitude = lon;
+      }
+
+      (async () => {
+        try {
+          const res = await fetch(`${TICKETS_URL}/${dbId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.success === false) {
+            err.textContent = ticketsApiFailureMessage(res, data, 'update');
+            return;
+          }
+          closeEditTicketModal();
+          await refreshTicketList();
+        } catch (e) {
+          err.textContent = e.message || 'Network error';
+        }
+      })();
+    });
+  }
 }
 
 function setupCreateTicketUI() {
@@ -1013,13 +1285,7 @@ function setupCreateTicketUI() {
           });
           const data = await res.json().catch(() => ({}));
           if (!res.ok || data.success === false) {
-            let msg =
-              (data && (data.error || data.message)) || `Create failed (${res.status})`;
-            if (res.status === 404) {
-              msg =
-                'Tickets API returned 404 — the route may not be deployed yet. Set CUUB_TICKETS_API_URL in the server .env to the full tickets URL (e.g. https://host/path/tickets), then restart.';
-            }
-            err.textContent = msg;
+            err.textContent = ticketsApiFailureMessage(res, data, 'create');
             return;
           }
           closeCreateTicketModal();
@@ -1028,6 +1294,128 @@ function setupCreateTicketUI() {
           err.textContent = e.message || 'Network error';
         }
       })();
+    });
+  }
+}
+
+function openRouteHomeModal() {
+  const modal = document.getElementById('modal-route-home');
+  const err = document.getElementById('modal-route-home-error');
+  const titleEl = document.getElementById('route-home-title');
+  const latEl = document.getElementById('route-home-lat');
+  const lonEl = document.getElementById('route-home-lon');
+  if (!modal) {
+    return;
+  }
+  if (err) {
+    err.textContent = '';
+  }
+  const h = getRouteHome();
+  if (titleEl) {
+    titleEl.value = h.title;
+  }
+  if (latEl) {
+    latEl.value = String(h.latitude);
+  }
+  if (lonEl) {
+    lonEl.value = String(h.longitude);
+  }
+  modal.classList.add('is-open');
+  modal.setAttribute('aria-hidden', 'false');
+}
+
+function closeRouteHomeModal() {
+  const modal = document.getElementById('modal-route-home');
+  const err = document.getElementById('modal-route-home-error');
+  if (!modal) {
+    return;
+  }
+  if (err) {
+    err.textContent = '';
+  }
+  modal.classList.remove('is-open');
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+function setupRouteHomeUI() {
+  const btn = document.getElementById('btn-route-home');
+  const modal = document.getElementById('modal-route-home');
+  const form = document.getElementById('form-route-home');
+  const cancel = document.getElementById('modal-route-home-cancel');
+  const reset = document.getElementById('modal-route-home-reset');
+  const err = document.getElementById('modal-route-home-error');
+
+  if (btn) {
+    btn.addEventListener('click', () => openRouteHomeModal());
+  }
+  if (cancel) {
+    cancel.addEventListener('click', () => closeRouteHomeModal());
+  }
+  if (reset) {
+    reset.addEventListener('click', () => {
+      localStorage.removeItem(ROUTE_HOME_STORAGE_KEY);
+      closeRouteHomeModal();
+      void recalculateRoute();
+    });
+  }
+  if (modal) {
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        closeRouteHomeModal();
+      }
+    });
+  }
+  if (form && err) {
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      err.textContent = '';
+
+      const titleEl = document.getElementById('route-home-title');
+      const latEl = document.getElementById('route-home-lat');
+      const lonEl = document.getElementById('route-home-lon');
+      const title = titleEl ? String(titleEl.value || '').trim() : '';
+      const lat = latEl ? parseCoord(latEl.value) : NaN;
+      const lon = lonEl ? parseCoord(lonEl.value) : NaN;
+
+      if (!title) {
+        err.textContent = 'Enter a label for this start point.';
+        return;
+      }
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        err.textContent = 'Enter valid latitude and longitude numbers.';
+        return;
+      }
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        err.textContent = 'Latitude must be −90…90, longitude −180…180.';
+        return;
+      }
+
+      const def = getDefaultRouteHome();
+      const sameAsDefault =
+        Math.abs(lat - def.latitude) < 1e-7 &&
+        Math.abs(lon - def.longitude) < 1e-7 &&
+        title === def.title;
+      if (sameAsDefault) {
+        localStorage.removeItem(ROUTE_HOME_STORAGE_KEY);
+      } else {
+        try {
+          localStorage.setItem(
+            ROUTE_HOME_STORAGE_KEY,
+            JSON.stringify({
+              id: CUSTOM_ROUTE_HOME_ID,
+              title,
+              latitude: lat,
+              longitude: lon,
+            }),
+          );
+        } catch (e) {
+          err.textContent = e.message || 'Could not save (storage full or blocked).';
+          return;
+        }
+      }
+
+      closeRouteHomeModal();
+      void recalculateRoute();
     });
   }
 }
@@ -1057,6 +1445,8 @@ async function init() {
 }
 
 setupCreateTicketUI();
+setupEditTicketUI();
+setupRouteHomeUI();
 
 function boot() {
   populateTaskMultiSelect();

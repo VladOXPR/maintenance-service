@@ -76,6 +76,29 @@
       margin-bottom: 0;
     }
 
+    .page-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-shrink: 0;
+    }
+
+    .btn-header-text {
+      padding: 0.45rem 0.75rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      font-family: inherit;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-strong);
+      background: var(--bg-muted);
+      color: var(--text-primary);
+      cursor: pointer;
+    }
+
+    .btn-header-text:hover {
+      background: #333333;
+    }
+
     .btn-add-ticket {
       flex-shrink: 0;
       width: 2.25rem;
@@ -297,6 +320,22 @@
       background: rgba(239, 68, 68, 0.22);
     }
 
+    .btn-ticket-edit {
+      padding: 0.35rem 0.55rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      font-family: inherit;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-strong);
+      background: var(--bg-muted);
+      color: var(--text-primary);
+      cursor: pointer;
+    }
+
+    .btn-ticket-edit:hover {
+      background: #333333;
+    }
+
     .modal-backdrop {
       display: none;
       position: fixed;
@@ -475,7 +514,10 @@
         <header class="page-header">
           <div class="page-header-row">
             <h1 class="page-title">Maintenance tickets</h1>
-            <button type="button" class="btn-add-ticket" id="btn-create-ticket" title="Create ticket" aria-label="Create ticket">+</button>
+            <div class="page-header-actions">
+              <button type="button" class="btn-header-text" id="btn-route-home" title="Where optimized routes start and return">Starting Point</button>
+              <button type="button" class="btn-add-ticket" id="btn-create-ticket" title="Create ticket" aria-label="Create ticket">+</button>
+            </div>
           </div>
           <p class="page-desc">
             Stations that need servicing (yellow or red slot status), aligned with Telegram alerts.
@@ -507,6 +549,69 @@
               <div class="modal-actions">
                 <button type="button" class="btn btn-secondary" id="modal-create-cancel">Cancel</button>
                 <button type="submit" class="btn btn-primary">Add ticket</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <div id="modal-edit" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modal-edit-title" aria-hidden="true">
+          <div class="modal-panel">
+            <h2 id="modal-edit-title" class="modal-title">Edit ticket</h2>
+            <p id="modal-edit-error" class="modal-error" aria-live="polite"></p>
+            <form id="form-edit-ticket">
+              <input type="hidden" id="edit-db-id" name="dbId" value="" />
+              <div class="form-row">
+                <label for="edit-location-name">Location name</label>
+                <input id="edit-location-name" name="location_name" type="text" autocomplete="off" required />
+              </div>
+              <div class="form-row">
+                <label for="edit-task">Tasks</label>
+                <select id="edit-task" name="task" multiple size="9" class="form-select-multi" aria-label="Tasks (select one or more)"></select>
+                <p class="form-station-hint">Hold Ctrl (Windows) or ⌘ (Mac) to select multiple. Replaces the full task list on save.</p>
+              </div>
+              <div class="form-row">
+                <label for="edit-description">Description (optional)</label>
+                <textarea id="edit-description" name="description" rows="2" placeholder="Notes for the team"></textarea>
+              </div>
+              <div class="form-row">
+                <label for="edit-latitude">Latitude</label>
+                <input id="edit-latitude" name="latitude" type="text" inputmode="decimal" autocomplete="off" />
+              </div>
+              <div class="form-row">
+                <label for="edit-longitude">Longitude</label>
+                <input id="edit-longitude" name="longitude" type="text" inputmode="decimal" autocomplete="off" />
+              </div>
+              <p class="form-station-hint">Leave coordinates blank to keep existing; if you change one, set both.</p>
+              <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" id="modal-edit-cancel">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save changes</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <div id="modal-route-home" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modal-route-home-title" aria-hidden="true">
+          <div class="modal-panel">
+            <h2 id="modal-route-home-title" class="modal-title">Starting Point</h2>
+            <p class="form-station-hint" style="margin-top:-0.5rem;margin-bottom:0.75rem;">Used only for Mapbox route order — not a ticket. Queue still lists stations/tickets only.</p>
+            <p id="modal-route-home-error" class="modal-error" aria-live="polite"></p>
+            <form id="form-route-home">
+              <div class="form-row">
+                <label for="route-home-title">Label</label>
+                <input id="route-home-title" name="title" type="text" autocomplete="off" placeholder="e.g. Depot" />
+              </div>
+              <div class="form-row">
+                <label for="route-home-lat">Latitude</label>
+                <input id="route-home-lat" name="latitude" type="text" inputmode="decimal" autocomplete="off" placeholder="41.8818" />
+              </div>
+              <div class="form-row">
+                <label for="route-home-lon">Longitude</label>
+                <input id="route-home-lon" name="longitude" type="text" inputmode="decimal" autocomplete="off" placeholder="-87.6374" />
+              </div>
+              <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" id="modal-route-home-reset">Use default</button>
+                <button type="button" class="btn btn-secondary" id="modal-route-home-cancel">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save &amp; reorder</button>
               </div>
             </form>
           </div>

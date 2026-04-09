@@ -111,6 +111,22 @@ app.delete('/api/tickets/:id', async (req, res) => {
   }
 });
 
+app.patch('/api/tickets/:id', async (req, res) => {
+  try {
+    const id = encodeURIComponent(req.params.id);
+    const payload = normalizeTicketTaskForUpstream(req.body || {});
+    const r = await fetch(`${CUUB_TICKETS_API_URL}/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json().catch(() => ({}));
+    res.status(r.status).json(data);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message || String(err) });
+  }
+});
+
 /**
  * Returns Mapbox nearest-neighbor route order for maintenance tickets (requires MAPBOX_ACCESS_TOKEN).
  */
