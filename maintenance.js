@@ -9,6 +9,9 @@ const STATIONS_URL = '/api/stations';
 /** Proxied by server.js → https://api.cuub.tech/tickets */
 const TICKETS_URL = '/api/tickets';
 
+/** Must match `MAPBOX_MATRIX_MAX_COORDINATES` in routeOptimization.js (Mapbox Matrix API). */
+const MAPBOX_MATRIX_MAX_COORDINATES = 25;
+
 /**
  * Prefer upstream error text; only then use a 404 hint (wrong proxy route vs wrong base URL).
  * @param {Response} res
@@ -1420,6 +1423,278 @@ function setupRouteHomeUI() {
   }
 }
 
+/**
+ * @param {object} station
+ */
+function stationHasCoordsForNetworkRoute(station) {
+  const id = String(station.id ?? '').trim();
+  if (!id) {
+    return false;
+  }
+  const lat = parseCoord(station.latitude);
+  const lon = parseCoord(station.longitude);
+  return Number.isFinite(lat) && Number.isFinite(lon);
+}
+
+/**
+ * @param {object[]} stations
+ */
+function renderNetworkRouteOmitStationList(stations) {
+  const wrap = document.getElementById('network-route-station-list');
+  if (!wrap) {
+    return;
+  }
+  wrap.innerHTML = '';
+  const list = (stations || []).filter(stationHasCoordsForNetworkRoute);
+  list.sort((a, b) =>
+    String(a.title || a.id).localeCompare(String(b.title || b.id), undefined, {
+      sensitivity: 'base',
+    }),
+  );
+  list.forEach((s, i) => {
+    const id = String(s.id).trim();
+    const row = document.createElement('div');
+    row.className = 'network-route-station-row';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'network-route-omit-cb';
+    cb.dataset.stationId = id;
+    cb.id = `network-route-omit-${i}`;
+    cb.setAttribute('aria-label', `Omit ${String(s.title || id)} from route`);
+
+    const lab = document.createElement('label');
+    lab.htmlFor = cb.id;
+    lab.appendChild(document.createTextNode(String(s.title || id).trim() || id));
+    const sid = document.createElement('span');
+    sid.className = 'network-route-station-id';
+    sid.textContent = ` · ${id}`;
+    lab.appendChild(sid);
+
+    row.appendChild(cb);
+    row.appendChild(lab);
+    wrap.appendChild(row);
+    cb.addEventListener('change', updateNetworkRouteIncludeSummary);
+  });
+  updateNetworkRouteIncludeSummary();
+}
+
+function updateNetworkRouteIncludeSummary() {
+  const countEl = document.getElementById('network-route-include-count');
+  if (!countEl) {
+    return;
+  }
+  const boxes = document.querySelectorAll('#network-route-station-list .network-route-omit-cb');
+  const omitted = document.querySelectorAll('#network-route-station-list .network-route-omit-cb:checked')
+    .length;
+  const included = boxes.length - omitted;
+  const maxStations = MAPBOX_MATRIX_MAX_COORDINATES - 1;
+  countEl.textContent = `Including ${included} station(s) in the route (max ${maxStations} stations plus your start = ${MAPBOX_MATRIX_MAX_COORDINATES} Mapbox points).`;
+  countEl.classList.toggle('network-route-include-count--warn', included > maxStations);
+}
+
+async function openNetworkRouteExportModal() {
+  const modal = document.getElementById('modal-network-route');
+  const err = document.getElementById('modal-network-route-error');
+  const nameEl = document.getElementById('export-start-name');
+  const latEl = document.getElementById('export-start-lat');
+  const lonEl = document.getElementById('export-start-lon');
+  if (!modal || !nameEl || !latEl || !lonEl) {
+    return;
+  }
+  if (err) {
+    err.textContent = '';
+  }
+  let stations = allStationsForPicker;
+  if (!Array.isArray(stations) || stations.length === 0) {
+    try {
+      stations = await fetchStations();
+      allStationsForPicker = stations;
+    } catch (e) {
+      if (err) {
+        err.textContent = e.message || 'Could not load stations.';
+      }
+      renderNetworkRouteOmitStationList([]);
+      modal.classList.add('is-open');
+      modal.setAttribute('aria-hidden', 'false');
+      return;
+    }
+  }
+  renderNetworkRouteOmitStationList(stations);
+  const h = getRouteHome();
+  nameEl.value = h.title;
+  latEl.value = String(h.latitude);
+  lonEl.value = String(h.longitude);
+  modal.classList.add('is-open');
+  modal.setAttribute('aria-hidden', 'false');
+}
+
+function closeNetworkRouteExportModal() {
+  const modal = document.getElementById('modal-network-route');
+  const err = document.getElementById('modal-network-route-error');
+  if (!modal) {
+    return;
+  }
+  if (err) {
+    err.textContent = '';
+  }
+  modal.classList.remove('is-open');
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+function setupNetworkRouteExportUI() {
+  const btn = document.getElementById('btn-network-route-export');
+  const modal = document.getElementById('modal-network-route');
+  const form = document.getElementById('form-network-route');
+  const cancel = document.getElementById('modal-network-route-cancel');
+  const err = document.getElementById('modal-network-route-error');
+  const submitBtn = document.getElementById('btn-network-route-submit');
+
+  const includeAllBtn = document.getElementById('network-route-include-all');
+  const omitAllBtn = document.getElementById('network-route-omit-all');
+
+  if (btn) {
+    btn.addEventListener('click', () => {
+      void openNetworkRouteExportModal();
+    });
+  }
+  if (includeAllBtn) {
+    includeAllBtn.addEventListener('click', () => {
+      document.querySelectorAll('#network-route-station-list .network-route-omit-cb').forEach((cb) => {
+        cb.checked = false;
+      });
+      updateNetworkRouteIncludeSummary();
+    });
+  }
+  if (omitAllBtn) {
+    omitAllBtn.addEventListener('click', () => {
+      document.querySelectorAll('#network-route-station-list .network-route-omit-cb').forEach((cb) => {
+        cb.checked = true;
+      });
+      updateNetworkRouteIncludeSummary();
+    });
+  }
+  if (cancel) {
+    cancel.addEventListener('click', () => closeNetworkRouteExportModal());
+  }
+  if (modal) {
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        closeNetworkRouteExportModal();
+      }
+    });
+  }
+  if (form && err) {
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      err.textContent = '';
+
+      const nameEl = document.getElementById('export-start-name');
+      const latEl = document.getElementById('export-start-lat');
+      const lonEl = document.getElementById('export-start-lon');
+      const name = nameEl ? String(nameEl.value || '').trim() : '';
+      const lat = latEl ? parseCoord(latEl.value) : NaN;
+      const lon = lonEl ? parseCoord(lonEl.value) : NaN;
+
+      if (!name) {
+        err.textContent = 'Enter a starting location name.';
+        return;
+      }
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+        err.textContent = 'Enter valid starting latitude and longitude.';
+        return;
+      }
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        err.textContent = 'Coordinates out of range.';
+        return;
+      }
+
+      const omitStationIds = Array.from(
+        document.querySelectorAll('#network-route-station-list .network-route-omit-cb:checked'),
+      )
+        .map((cb) => cb.dataset.stationId)
+        .filter(Boolean);
+      const omitBoxes = document.querySelectorAll('#network-route-station-list .network-route-omit-cb');
+      const includedCount = omitBoxes.length - omitStationIds.length;
+      const maxStations = MAPBOX_MATRIX_MAX_COORDINATES - 1;
+
+      if (omitBoxes.length === 0) {
+        err.textContent = 'No stations with coordinates loaded. Refresh the page or try again.';
+        return;
+      }
+      if (includedCount < 1) {
+        err.textContent =
+          'Include at least one station (uncheck Omit for stations that should appear on the route).';
+        return;
+      }
+      if (includedCount > maxStations) {
+        err.textContent = `Too many stations included (${includedCount}). Omit at least ${includedCount - maxStations} more (Mapbox limit: ${maxStations} stations plus start).`;
+        return;
+      }
+
+      const body = {
+        startingLocation: { name, latitude: lat, longitude: lon },
+        omitStationIds,
+      };
+
+      const doBtn = submitBtn;
+      const prevText = doBtn ? doBtn.textContent : '';
+      if (doBtn) {
+        doBtn.disabled = true;
+        doBtn.textContent = 'Working…';
+      }
+
+      (async () => {
+        try {
+          const res = await fetch('/api/network-route-export', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          const ct = res.headers.get('Content-Type') || '';
+          if (!res.ok) {
+            const data = ct.includes('json') ? await res.json().catch(() => ({})) : {};
+            err.textContent =
+              (data && (data.error || data.message)) || `Export failed (${res.status})`;
+            return;
+          }
+          if (!ct.includes('spreadsheet') && !ct.includes('octet-stream')) {
+            const data = await res.json().catch(() => ({}));
+            err.textContent = (data && data.error) || 'Unexpected response from server.';
+            return;
+          }
+          const blob = await res.blob();
+          let filename = `network-route-${new Date().toISOString().slice(0, 10)}.xlsx`;
+          const dispo = res.headers.get('Content-Disposition');
+          if (dispo) {
+            const m = dispo.match(/filename="([^"]+)"/);
+            if (m) {
+              filename = m[1];
+            }
+          }
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          a.rel = 'noopener';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+          closeNetworkRouteExportModal();
+        } catch (e) {
+          err.textContent = e.message || 'Network error';
+        } finally {
+          if (doBtn) {
+            doBtn.disabled = false;
+            doBtn.textContent = prevText;
+          }
+        }
+      })();
+    });
+  }
+}
+
 async function init() {
   setStatus('');
   try {
@@ -1447,6 +1722,7 @@ async function init() {
 setupCreateTicketUI();
 setupEditTicketUI();
 setupRouteHomeUI();
+setupNetworkRouteExportUI();
 
 function boot() {
   populateTaskMultiSelect();

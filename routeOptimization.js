@@ -10,6 +10,9 @@
 const mapboxSdk = require('@mapbox/mapbox-sdk');
 const mbxMatrix = require('@mapbox/mapbox-sdk/services/matrix');
 
+/** Mapbox Matrix API coordinate limit (start + stops must fit in one request). */
+const MAPBOX_MATRIX_MAX_COORDINATES = 25;
+
 const SERVICE_MINUTES_PER_STOP = 5;
 
 /**
@@ -24,8 +27,10 @@ function validateLocations(locations) {
   if (!Array.isArray(locations) || locations.length === 0) {
     throw new Error('locations must be a non-empty array');
   }
-  if (locations.length > 100) {
-    throw new Error('At most 100 locations (Mapbox Matrix limit)');
+  if (locations.length > MAPBOX_MATRIX_MAX_COORDINATES) {
+    throw new Error(
+      `At most ${MAPBOX_MATRIX_MAX_COORDINATES} locations (Mapbox Matrix limit; use fewer stops or split the route).`,
+    );
   }
   const seen = new Set();
   for (let i = 0; i < locations.length; i++) {
@@ -210,7 +215,7 @@ async function optimizeDrivingRoute(locations) {
   };
 }
 
-module.exports = { optimizeDrivingRoute };
+module.exports = { optimizeDrivingRoute, MAPBOX_MATRIX_MAX_COORDINATES };
 
 // ─── Example (run: node routeOptimization.js, with MAPBOX_ACCESS_TOKEN set) ─
 

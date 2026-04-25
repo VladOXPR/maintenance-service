@@ -16,6 +16,29 @@ if (typeof globalThis.fetch === 'undefined') {
 const cron = require('node-cron');
 const { omitTestStationRows } = require('./stationFilters');
 
+/** Abort slow upstream calls so /status cannot stall the Telegram poll loop forever. */
+const STATIONS_FETCH_TIMEOUT_MS = Math.max(
+  5000,
+  parseInt(process.env.STATIONS_FETCH_TIMEOUT_MS || '45000', 10) || 45000,
+);
+
+/** getUpdates must return or abort so we always schedule the next poll (Telegram long-poll + margin). */
+const TELEGRAM_GET_UPDATES_TIMEOUT_MS = Math.max(
+  5000,
+  parseInt(process.env.TELEGRAM_GET_UPDATES_TIMEOUT_MS || '45000', 10) || 45000,
+);
+
+const TELEGRAM_SEND_MESSAGE_TIMEOUT_MS = Math.max(
+  5000,
+  parseInt(process.env.TELEGRAM_SEND_MESSAGE_TIMEOUT_MS || '60000', 10) || 60000,
+);
+
+/** Cap total time for fetch stations + format + sendMessage so polling never stalls indefinitely. */
+const TELEGRAM_STATUS_COMMAND_TIMEOUT_MS = Math.max(
+  15000,
+  parseInt(process.env.TELEGRAM_STATUS_COMMAND_TIMEOUT_MS || '120000', 10) || 120000,
+);
+
 // Telegram Bot Configuration
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8279022767:AAHPZ4IJE6Blcm3wuNW9L1-HEoY1QjNoQ8I';
 const TELEGRAM_API_BASE = `https://api.telegram.org/bot${BOT_TOKEN}`;
@@ -32,12 +55,13 @@ async function sendMessage(chatId, text) {
     const response = await fetch(url, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         chat_id: chatId,
-        text: text
-      })
+        text: text,
+      }),
+      signal: AbortSignal.timeout(TELEGRAM_SEND_MESSAGE_TIMEOUT_MS),
     });
 
     const data = await response.json();
@@ -80,8 +104,10 @@ async function getUpdates() {
  */
 async function fetchStations() {
   try {
-    const response = await fetch('https://api.cuub.tech/stations');
-    
+    const response = await fetch('https://api.cuub.tech/stations', {
+      signal: AbortSignal.timeout(STATIONS_FETCH_TIMEOUT_MS),
+    });
+
     if (!response.ok) {
       throw new Error(`API error: ${response.status} ${response.statusText}`);
     }
@@ -358,6 +384,198 @@ function scheduleDailyTelegramReport() {
 }
 
 // ========================================
+// TOKEN HEALTH → TELEGRAM (api.cuub.tech)
+// ========================================
+
+const DEFAULT_ALERT_CHAT_ID = '-5202000799'; // CUUB_Alert group (same default as scheduled reports)
+
+/** @type {boolean} */
+let tokenHealthLastOverallBad = false;
+/** @type {number} */
+let tokenHealthLastFailureAlertAt = 0;
+
+/**
+ * How long to wait before repeating the same failure alert (ms).
+ * Override with TOKEN_HEALTH_ALERT_REPEAT_HOURS (default 6).
+ */
+function tokenHealthRepeatAlertMs() {
+  const h = parseFloat(process.env.TOKEN_HEALTH_ALERT_REPEAT_HOURS || '6');
+  const hours = Number.isFinite(h) && h > 0 ? h : 6;
+  return hours * 60 * 60 * 1000;
+}
+
+/**
+ * Fetch CUUB token health; classify outcome for alerting.
+ * @returns {{ severity: 'ok'|'warn'|'crit', headline: string, detail: string, tokenRefreshUrl: string, recovery: boolean }}
+ */
+async function evaluateTokenHealthForAlert() {
+  const healthUrl = process.env.TOKEN_HEALTH_URL || 'https://api.cuub.tech/token/health';
+  const fallbackRefreshUrl = process.env.TOKEN_REFRESH_URL || 'https://api.cuub.tech/token';
+
+  let data = null;
+  let httpStatus = 0;
+  let fetchError = null;
+
+  try {
+    const res = await fetch(healthUrl, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    httpStatus = res.status;
+    const text = await res.text();
+    try {
+      data = JSON.parse(text);
+    } catch {
+      fetchError = new Error(`Non-JSON response (HTTP ${httpStatus}): ${text.slice(0, 200)}`);
+    }
+  } catch (e) {
+    fetchError = e;
+  }
+
+  const tokenRefreshUrl =
+    (data && typeof data.tokenRefreshUrl === 'string' && data.tokenRefreshUrl.trim()) ||
+    fallbackRefreshUrl;
+
+  if (fetchError && !data) {
+    return {
+      severity: 'crit',
+      headline: 'CUUB token health check unreachable',
+      detail: `${healthUrl}\n${fetchError.message || String(fetchError)}`,
+      tokenRefreshUrl,
+      recovery: false,
+    };
+  }
+
+  if (!data) {
+    return {
+      severity: 'crit',
+      headline: 'CUUB token health returned invalid JSON',
+      detail: `HTTP ${httpStatus}. ${fetchError ? fetchError.message : ''}`.trim(),
+      tokenRefreshUrl,
+      recovery: false,
+    };
+  }
+
+  if (data.success === false) {
+    return {
+      severity: 'crit',
+      headline: 'CUUB token health service error',
+      detail: String(data.error || data.message || JSON.stringify(data)).slice(0, 500),
+      tokenRefreshUrl,
+      recovery: false,
+    };
+  }
+
+  if (data.tokenNeedsAttention === true) {
+    return {
+      severity: 'crit',
+      headline: 'CUUB / Energo token needs attention',
+      detail: String(
+        data.message ||
+          `tokenPresent=${data.tokenPresent} tokenValid=${data.tokenValid} httpStatus=${data.httpStatus}`,
+      ).slice(0, 500),
+      tokenRefreshUrl,
+      recovery: false,
+    };
+  }
+
+  if (data.energoApiReachable === false) {
+    return {
+      severity: 'warn',
+      headline: 'Energo API unreachable (from CUUB probe)',
+      detail: String(data.message || 'Slot/cabinet probe could not reach backend.energo.vip.').slice(
+        0,
+        500,
+      ),
+      tokenRefreshUrl,
+      recovery: false,
+    };
+  }
+
+  return {
+    severity: 'ok',
+    headline: 'CUUB token health OK',
+    detail: data.checkedAt ? `Last check: ${data.checkedAt}` : '',
+    tokenRefreshUrl,
+    recovery: true,
+  };
+}
+
+/**
+ * Run one token health check and notify Telegram when appropriate (throttled).
+ */
+async function checkTokenHealthAndAlert() {
+  const alertsOff = ['0', 'false', 'no', 'off'].includes(
+    String(process.env.TOKEN_HEALTH_ALERTS || '1').toLowerCase(),
+  );
+  if (alertsOff) {
+    return;
+  }
+
+  const chatId = process.env.TELEGRAM_CHAT_ID || DEFAULT_ALERT_CHAT_ID;
+  const outcome = await evaluateTokenHealthForAlert();
+  const isBad = outcome.severity !== 'ok';
+  const now = Date.now();
+
+  if (isBad) {
+    if (!tokenHealthLastOverallBad) {
+      tokenHealthLastOverallBad = true;
+      tokenHealthLastFailureAlertAt = now;
+      const body = `⚠️ ${outcome.headline}\n\n${outcome.detail}\n\nRefresh token:\n${outcome.tokenRefreshUrl}`;
+      await sendMessage(chatId, body);
+      console.log(`📣 Token health alert sent (${outcome.severity}): ${outcome.headline}`);
+      return;
+    }
+    if (now - tokenHealthLastFailureAlertAt >= tokenHealthRepeatAlertMs()) {
+      tokenHealthLastFailureAlertAt = now;
+      const body = `⚠️ ${outcome.headline} (still)\n\n${outcome.detail}\n\nRefresh token:\n${outcome.tokenRefreshUrl}`;
+      await sendMessage(chatId, body);
+      console.log(`📣 Token health repeat alert (${outcome.severity}): ${outcome.headline}`);
+    }
+    return;
+  }
+
+  if (tokenHealthLastOverallBad) {
+    tokenHealthLastOverallBad = false;
+    tokenHealthLastFailureAlertAt = 0;
+    const body = `✅ ${outcome.headline}\n${outcome.detail ? `${outcome.detail}\n` : ''}\nToken refresh (if ever needed):\n${outcome.tokenRefreshUrl}`;
+    await sendMessage(chatId, body);
+    console.log('📣 Token health recovery message sent');
+  }
+}
+
+/**
+ * Schedule periodic GET /token/health checks and Telegram alerts to the same group as reports.
+ */
+function scheduleTokenHealthAlerts() {
+  const alertsOff = ['0', 'false', 'no', 'off'].includes(
+    String(process.env.TOKEN_HEALTH_ALERTS || '1').toLowerCase(),
+  );
+  if (alertsOff) {
+    console.log('⏭️  Token health Telegram alerts disabled (TOKEN_HEALTH_ALERTS=0)');
+    return;
+  }
+
+  const healthUrl = process.env.TOKEN_HEALTH_URL || 'https://api.cuub.tech/token/health';
+  const cronExpr = process.env.TOKEN_HEALTH_CRON || '*/15 * * * *';
+  const cronOpts = { timezone: CHICAGO_TZ };
+
+  cron.schedule(
+    cronExpr,
+    () => {
+      checkTokenHealthAndAlert().catch((err) => {
+        console.error('❌ Token health check failed:', err.message || err);
+      });
+    },
+    cronOpts,
+  );
+
+  console.log(
+    `📡 Token health checks scheduled (${cronExpr}, ${CHICAGO_TZ}): ${healthUrl} → Telegram on failure`,
+  );
+}
+
+// ========================================
 // TELEGRAM BOT COMMAND HANDLER
 // ========================================
 
@@ -378,55 +596,77 @@ function startTelegramCommandPolling() {
   }
   
   const pollForMessages = async () => {
+    /** If anything hangs, we still reschedule — otherwise the bot stops until process restart. */
+    let delayMs = 3000;
     try {
-      // Get updates from Telegram
-      // Use timeout=0 to get only new updates, not pending ones
-      const url = lastUpdateId > 0 
-        ? `${TELEGRAM_API_BASE}/getUpdates?offset=${lastUpdateId + 1}&timeout=1`
-        : `${TELEGRAM_API_BASE}/getUpdates?timeout=1`;
-      
-      const response = await fetch(url);
-      
+      // Get updates from Telegram (short long-poll)
+      const url =
+        lastUpdateId > 0
+          ? `${TELEGRAM_API_BASE}/getUpdates?offset=${lastUpdateId + 1}&timeout=1`
+          : `${TELEGRAM_API_BASE}/getUpdates?timeout=1`;
+
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(TELEGRAM_GET_UPDATES_TIMEOUT_MS),
+      });
+
       if (!response.ok) {
         console.error(`❌ Telegram API HTTP error: ${response.status} ${response.statusText}`);
-        setTimeout(pollForMessages, 5000);
+        delayMs = 5000;
         return;
       }
-      
+
       const data = await response.json();
-      
+
       if (!data.ok) {
         console.error('❌ Telegram API error:', data.description);
-        setTimeout(pollForMessages, 5000);
+        delayMs = 5000;
         return;
       }
-      
+
       if (data.result && data.result.length > 0) {
         console.log(`📥 Received ${data.result.length} update(s) from Telegram`);
-        
+
         for (const update of data.result) {
           lastUpdateId = Math.max(lastUpdateId, update.update_id);
-          
-          // Handle messages
+
           if (update.message && update.message.text) {
             const messageText = update.message.text.trim();
             const chatId = update.message.chat.id;
             const chatTitle = update.message.chat.title || update.message.chat.first_name || 'Unknown';
             const username = update.message.from?.username || update.message.from?.first_name || 'Unknown';
-            
+
             console.log(`💬 Message received: "${messageText}" from ${username} in ${chatTitle} (chatId: ${chatId})`);
-            
-            // Handle /status command (can be /status or /status@botname)
-            if (messageText === '/status' || messageText.startsWith('/status@') || messageText.startsWith('/status ')) {
+
+            if (
+              messageText === '/status' ||
+              messageText.startsWith('/status@') ||
+              messageText.startsWith('/status ')
+            ) {
               console.log(`📨 /status command detected from chat: ${chatTitle} (${chatId})`);
               try {
-                await sendStationStatus(chatId.toString());
+                await Promise.race([
+                  sendStationStatus(chatId.toString()),
+                  new Promise((_, reject) =>
+                    setTimeout(
+                      () =>
+                        reject(
+                          new Error(
+                            `sendStationStatus exceeded ${TELEGRAM_STATUS_COMMAND_TIMEOUT_MS}ms (stations API or Telegram send hung)`,
+                          ),
+                        ),
+                      TELEGRAM_STATUS_COMMAND_TIMEOUT_MS,
+                    ),
+                  ),
+                ]);
                 console.log(`✅ Status report sent to chat ${chatId}`);
               } catch (error) {
                 console.error(`❌ Error sending status report to chat ${chatId}:`, error.message);
                 console.error('Error stack:', error.stack);
                 try {
-                  await sendMessage(chatId.toString(), '❌ Error fetching station status. Please try again later.');
+                  await sendMessage(
+                    chatId.toString(),
+                    '❌ Error fetching station status. Please try again later.',
+                  );
                 } catch (sendError) {
                   console.error('Failed to send error message:', sendError);
                 }
@@ -438,10 +678,10 @@ function startTelegramCommandPolling() {
     } catch (error) {
       console.error('❌ Error polling Telegram messages:', error.message);
       console.error('Error stack:', error.stack);
+      delayMs = 5000;
+    } finally {
+      setTimeout(pollForMessages, delayMs);
     }
-    
-    // Poll again after a short delay
-    setTimeout(pollForMessages, 3000); // Poll every 3 seconds (reduced from 5)
   };
   
   console.log('🤖 Starting Telegram bot command polling...');
@@ -463,7 +703,10 @@ module.exports = {
   getUpdates,
   getChatId,
   scheduleDailyTelegramReport,
-  startTelegramCommandPolling
+  scheduleTokenHealthAlerts,
+  checkTokenHealthAndAlert,
+  evaluateTokenHealthForAlert,
+  startTelegramCommandPolling,
 };
 
 // If running directly, try to get chat_id and send station status

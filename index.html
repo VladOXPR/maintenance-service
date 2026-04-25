@@ -336,6 +336,56 @@
       background: #333333;
     }
 
+    .network-route-station-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-bottom: 0.5rem;
+    }
+
+    .network-route-station-actions .btn {
+      padding: 0.35rem 0.65rem;
+      font-size: 0.8rem;
+    }
+
+    .network-route-station-scroll {
+      max-height: 16rem;
+      overflow: auto;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      padding: 0.5rem 0.65rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .network-route-station-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      padding: 0.3rem 0;
+      font-size: 0.85rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .network-route-station-row:last-child {
+      border-bottom: none;
+    }
+
+    .network-route-station-row label {
+      flex: 1;
+      cursor: pointer;
+      line-height: 1.35;
+      color: var(--text-primary);
+    }
+
+    .network-route-station-id {
+      color: var(--text-tertiary);
+      font-weight: 400;
+    }
+
+    .network-route-include-count--warn {
+      color: #fca5a5;
+    }
+
     .modal-backdrop {
       display: none;
       position: fixed;
@@ -362,6 +412,10 @@
       padding: 1.25rem;
     }
 
+    .modal-panel--network-route {
+      max-width: min(520px, 100vw - 2rem);
+    }
+
     .modal-title {
       margin: 0 0 1rem;
       font-size: 1rem;
@@ -373,7 +427,8 @@
       margin-bottom: 1rem;
     }
 
-    .form-row label {
+    .form-row label,
+    .form-label-block {
       display: block;
       font-size: 0.85rem;
       font-weight: 500;
@@ -516,6 +571,7 @@
             <h1 class="page-title">Maintenance tickets</h1>
             <div class="page-header-actions">
               <button type="button" class="btn-header-text" id="btn-route-home" title="Where optimized routes start and return">Starting Point</button>
+              <button type="button" class="btn-header-text" id="btn-network-route-export" title="Shortest driving order for every station; download Excel">Network route</button>
               <button type="button" class="btn-add-ticket" id="btn-create-ticket" title="Create ticket" aria-label="Create ticket">+</button>
             </div>
           </div>
@@ -585,6 +641,44 @@
               <div class="modal-actions">
                 <button type="button" class="btn btn-secondary" id="modal-edit-cancel">Cancel</button>
                 <button type="submit" class="btn btn-primary">Save changes</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <div id="modal-network-route" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modal-network-route-title" aria-hidden="true">
+          <div class="modal-panel modal-panel--network-route">
+            <h2 id="modal-network-route-title" class="modal-title">Full network route (Excel)</h2>
+            <p class="form-station-hint" style="margin-top:-0.5rem;margin-bottom:0.75rem;">
+              Shortest driving order for stations you <strong>include</strong> below (Mapbox). Requires <code>MAPBOX_ACCESS_TOKEN</code> on the server. Mapbox allows <strong>25 coordinates</strong> per request — your start is one, so at most <strong>24 stations</strong> on the route; check <strong>Omit</strong> to exclude any number of stations.
+            </p>
+            <p id="modal-network-route-error" class="modal-error" aria-live="polite"></p>
+            <form id="form-network-route">
+              <div class="form-row">
+                <span class="form-label-block">Stations</span>
+                <p class="form-station-hint">Check <strong>Omit</strong> for stations to leave out of the optimized route and spreadsheet.</p>
+                <div class="network-route-station-actions">
+                  <button type="button" class="btn btn-secondary" id="network-route-include-all">Include all</button>
+                  <button type="button" class="btn btn-secondary" id="network-route-omit-all">Omit all</button>
+                </div>
+                <p id="network-route-include-count" class="form-station-hint" aria-live="polite"></p>
+                <div id="network-route-station-list" class="network-route-station-scroll" role="group" aria-label="Stations; omit checked rows from route"></div>
+              </div>
+              <div class="form-row">
+                <label for="export-start-name">Starting location name</label>
+                <input id="export-start-name" name="name" type="text" autocomplete="off" required placeholder="e.g. Depot" />
+              </div>
+              <div class="form-row">
+                <label for="export-start-lat">Starting latitude</label>
+                <input id="export-start-lat" name="latitude" type="text" inputmode="decimal" autocomplete="off" required placeholder="41.8818" />
+              </div>
+              <div class="form-row">
+                <label for="export-start-lon">Starting longitude</label>
+                <input id="export-start-lon" name="longitude" type="text" inputmode="decimal" autocomplete="off" required placeholder="-87.6374" />
+              </div>
+              <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" id="modal-network-route-cancel">Cancel</button>
+                <button type="submit" class="btn btn-primary" id="btn-network-route-submit">Download Excel</button>
               </div>
             </form>
           </div>

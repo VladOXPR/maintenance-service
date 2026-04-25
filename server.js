@@ -1,6 +1,45 @@
 const express = require('express');
 const path = require('path');
+const XLSX = require('xlsx');
 const { omitTestStationRows } = require('./stationFilters');
+
+/**
+ * @param {object[]} stations
+ * @returns {{ id: string, title: string, latitude: number, longitude: number }[]}
+ */
+/**
+ * @param {object[]} stations
+ * @param {string[]} [omitStationIds] Raw station `id` values to exclude from routing.
+ */
+function stationsToRouteLocations(stations, omitStationIds) {
+  const omit = new Set(
+    Array.isArray(omitStationIds)
+      ? omitStationIds.map((x) => String(x).trim()).filter(Boolean)
+      : [],
+  );
+  const out = [];
+  for (const s of stations) {
+    if (s == null || typeof s !== 'object') {
+      continue;
+    }
+    const id = String(s.id ?? '').trim();
+    if (!id || omit.has(id)) {
+      continue;
+    }
+    const lat = Number(s.latitude);
+    const lon = Number(s.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      continue;
+    }
+    out.push({
+      id: `st-${id}`,
+      title: String(s.title || '').trim() || id,
+      latitude: lat,
+      longitude: lon,
+    });
+  }
+  return out;
+}
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 require('dotenv').config({ path: path.join(__dirname, '.env.local') });
@@ -149,6 +188,78 @@ app.post('/api/maintenance-route-order', async (req, res) => {
   }
 });
 
+/**
+ * Full-network driving route from a chosen start; optional `omitStationIds` excludes stations.
+ * Mapbox Matrix allows a limited number of coordinates per request (see MAPBOX_MATRIX_MAX_COORDINATES in routeOptimization.js).
+ */
+app.post('/api/network-route-export', async (req, res) => {
+  try {
+    const { optimizeDrivingRoute, MAPBOX_MATRIX_MAX_COORDINATES } = require('./routeOptimization');
+    const body = req.body || {};
+    const sl = body.startingLocation || body.start || {};
+    const name = String(sl.name || sl.title || '').trim();
+    const lat = Number(sl.latitude);
+    const lon = Number(sl.longitude);
+    if (!name) {
+      return res.status(400).json({ error: 'Starting location name is required.' });
+    }
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return res.status(400).json({ error: 'Valid starting latitude and longitude are required.' });
+    }
+    if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      return res.status(400).json({ error: 'Starting coordinates are out of range.' });
+    }
+
+    const stationsRes = await fetch('https://api.cuub.tech/stations');
+    const stationsData = await stationsRes.json().catch(() => ({}));
+    if (!stationsData.success || !Array.isArray(stationsData.data)) {
+      return res.status(502).json({ error: 'Could not load stations from the API.' });
+    }
+    const stations = omitTestStationRows(stationsData.data);
+    const omitStationIds = Array.isArray(body.omitStationIds)
+      ? body.omitStationIds.map((x) => String(x).trim()).filter(Boolean)
+      : [];
+    const stationLocs = stationsToRouteLocations(stations, omitStationIds);
+    const startLoc = {
+      id: 'network-route-start',
+      title: name,
+      latitude: lat,
+      longitude: lon,
+    };
+    const locations = [startLoc, ...stationLocs];
+    if (locations.length > MAPBOX_MATRIX_MAX_COORDINATES) {
+      return res.status(400).json({
+        error: `Too many stops (${locations.length}). Mapbox allows at most ${MAPBOX_MATRIX_MAX_COORDINATES} coordinates (1 start + up to ${MAPBOX_MATRIX_MAX_COORDINATES - 1} stations). Omit more stations and try again.`,
+      });
+    }
+    if (locations.length < 2) {
+      return res.status(400).json({
+        error:
+          'No stations left to route after omissions (need at least one station with coordinates besides the start).',
+      });
+    }
+
+    const result = await optimizeDrivingRoute(locations);
+    const aoa = [['Location name'], ...result.orderedStops.map((stop) => [stop.title])];
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    XLSX.utils.book_append_sheet(wb, ws, 'Route');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const filename = `network-route-${dateStr}.xlsx`;
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(Buffer.from(buf));
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
 // ========================================
 // TELEGRAM BOT SCHEDULERS
 // ========================================
@@ -166,6 +277,10 @@ if (telegramBot) {
   setTimeout(() => {
     telegramBot.scheduleDailyTelegramReport();
   }, 30000);
+
+  setTimeout(() => {
+    telegramBot.scheduleTokenHealthAlerts();
+  }, 32000);
 
   setTimeout(() => {
     telegramBot.startTelegramCommandPolling();

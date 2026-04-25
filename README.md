@@ -11,6 +11,22 @@ npm start
 
 Open http://localhost:8080
 
+## Token health → Telegram
+
+On a schedule (default every **15 minutes**, `America/Chicago`), the server calls **`https://api.cuub.tech/token/health`**. If the CUUB API is unreachable, the JSON is invalid, `success` is false, or **`tokenNeedsAttention`** is true, it messages **`TELEGRAM_CHAT_ID`** (same default group as the daily report) with the **`tokenRefreshUrl`** from the response (usually **`https://api.cuub.tech/token`**). While the problem persists, a repeat alert is sent at most every **6 hours** (`TOKEN_HEALTH_ALERT_REPEAT_HOURS`). When health is OK again after a failure, a short recovery message is sent.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `TOKEN_HEALTH_ALERTS` | `1` | Set to `0` / `false` / `off` to disable |
+| `TOKEN_HEALTH_URL` | `https://api.cuub.tech/token/health` | Health endpoint |
+| `TOKEN_REFRESH_URL` | `https://api.cuub.tech/token` | Fallback link in messages if the health JSON omits it |
+| `TOKEN_HEALTH_CRON` | `*/15 * * * *` | Cron expression (Chicago TZ) |
+| `TOKEN_HEALTH_ALERT_REPEAT_HOURS` | `6` | Hours between repeat failure alerts |
+
+## Telegram `/status` polling
+
+The bot loop used to **stop permanently** if `GET https://api.cuub.tech/stations` or Telegram `sendMessage` **never returned** (no timeout on `fetch`): after one hung `/status`, the next `getUpdates` was never scheduled. Timeouts and a `finally` reschedule are now in place. Optional env: `STATIONS_FETCH_TIMEOUT_MS`, `TELEGRAM_GET_UPDATES_TIMEOUT_MS`, `TELEGRAM_SEND_MESSAGE_TIMEOUT_MS`, `TELEGRAM_STATUS_COMMAND_TIMEOUT_MS`.
+
 ## Deploy to Cloud Run
 
 ```bash
